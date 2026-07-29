@@ -50,6 +50,7 @@ class GeneratedQuiz(BaseModel):
 LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.png"
 AFJ_LOGO_PATH = Path(__file__).parent / "assets" / "afj.jpeg"
 LOGO_IMAGE = Image.open(LOGO_PATH)
+LOGO_DATA = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
 
 st.set_page_config(
     page_title="XPLMS",
@@ -160,6 +161,10 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   border:1px solid #dbe3ec; border-left:6px solid var(--brand); border-radius:18px;
   padding:26px 30px; margin-bottom:20px; box-shadow:0 10px 28px rgba(31,93,170,.09); position:relative; overflow:hidden; }
 .hero:after { content:""; position:absolute; width:120px; height:120px; border-radius:50%; right:-35px; top:-45px; background:rgba(242,169,0,.16); }
+.hero-inner { display:flex; align-items:center; justify-content:space-between; gap:20px; position:relative; z-index:1; }
+.hero-brand { flex:0 0 auto; text-align:center; min-width:105px; }
+.hero-brand img { display:block; width:72px; height:72px; object-fit:contain; margin:0 auto 3px; }
+.hero-identity { color:#40516a; font-size:.68rem; font-weight:800; letter-spacing:.055em; white-space:nowrap; }
 .hero h1 { color:#17233a; margin:.2rem 0 .35rem; font-size:2.15rem; }
 .hero p { color:#536174 !important; margin:0; }
 .metric-card,.panel { background:linear-gradient(145deg,#fff,#f8fbff); border:1px solid var(--line); border-top:4px solid var(--brand); border-radius:18px; padding:18px 20px;
@@ -402,6 +407,10 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     font-size:1.42rem;
     line-height:1.18;
   }
+  .hero-inner { gap:10px; }
+  .hero-brand { min-width:82px; }
+  .hero-brand img { width:54px; height:54px; }
+  .hero-identity { font-size:.58rem; max-width:110px; overflow:hidden; text-overflow:ellipsis; }
   body:has(.student-sidebar-marker) .hero p {
     font-size:.88rem;
     line-height:1.4;
@@ -689,8 +698,13 @@ def polish_chart(fig: Any) -> Any:
 
 
 def heading(eyebrow: str, title: str, copy: str = "") -> None:
+    identity = html.escape(str(st.session_state.get("header_identity", "")))
     st.markdown(
-        f'<div class="hero"><h1>{title.upper()}</h1></div>',
+        f'<div class="hero"><div class="hero-inner">'
+        f'<h1>{html.escape(title.upper())}</h1>'
+        f'<div class="hero-brand"><img src="data:image/png;base64,{LOGO_DATA}" '
+        f'alt="XPLMS"><div class="hero-identity">{identity}</div></div>'
+        f'</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -930,8 +944,8 @@ def merged_students() -> tuple[pd.DataFrame, bool]:
     return merged, live_a and live_b and live_c
 
 
-def student_nickname(user: dict[str, Any]) -> str:
-    """Return the student's preferred nickname with a safe account fallback."""
+def student_identity(user: dict[str, Any]) -> tuple[str, str]:
+    """Return the student's preferred nickname and class."""
     background, _ = fetch_table("stud_background", DEMO_STUDENTS)
     matric = user.get("no_matrik")
     if matric and "NO MATRIK" in background.columns:
@@ -942,11 +956,18 @@ def student_nickname(user: dict[str, Any]) -> str:
         matched = pd.DataFrame()
     if not matched.empty:
         row = matched.iloc[0]
+        nickname = ""
         for column in ["NICKNAME PELAJAR", "nickname", "NAMA PELAJAR", "name"]:
             value = row.get(column)
             if pd.notna(value) and str(value).strip():
-                return str(value).strip()
-    return str(user.get("name", "Student"))
+                nickname = str(value).strip()
+                break
+        student_class = row.get("KELAS", row.get("class", row.get("cohort", "—")))
+        return (
+            nickname or str(user.get("name", "Student")),
+            "—" if pd.isna(student_class) else str(student_class),
+        )
+    return str(user.get("name", "Student")), "—"
 
 
 ASSESSMENT_COLUMNS = [
@@ -1843,7 +1864,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
             ["All", *chapters],
             default="All",
             format_func=lambda value: (
-                "All chapters" if value == "All" else f"C{value}"
+                "ALL" if value == "All" else f"C{value}"
             ),
             key=f"{'admin' if lecturer else 'student'}_material_chapter",
         )
@@ -3115,7 +3136,7 @@ def user_access_page() -> None:
 
 
 def change_password_page() -> None:
-    st.title("SET A NEW PASSWORD")
+    heading("", "Set a new password")
     st.write("Your administrator issued a temporary password. Replace it before continuing.")
     with st.form("change_password"):
         password = st.text_input("New password", type="password")
@@ -3182,6 +3203,9 @@ def main() -> None:
         return
     user = st.session_state.user
     if user.get("must_change_password"):
+        st.session_state.header_identity = (
+            f"{user.get('name', 'USER')} | {user.get('role', 'USER')}"
+        ).upper()
         change_password_page()
         return
     actual_role = user.get("role", "Student")
@@ -3192,7 +3216,14 @@ def main() -> None:
     )
     if role not in {"Student", "Admin"}:
         role = "Student"
-    display_name = student_nickname(user) if role == "Student" else user["name"]
+    if role == "Student":
+        display_name, student_class = student_identity(user)
+        st.session_state.header_identity = (
+            f"{display_name} | {student_class}"
+        ).upper()
+    else:
+        display_name = user["name"]
+        st.session_state.header_identity = f"{display_name} | ADMIN".upper()
     page = sidebar(role, display_name)
     page = mobile_navigation(role, page)
     if role == "Student":
