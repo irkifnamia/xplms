@@ -857,7 +857,7 @@ def sidebar(role: str, name: str) -> str:
         menus = {
             "Student": [
                 "Profile", "Materials", "My XP", "Leaderboard",
-                "Progress", "Request XP", "Quiz"
+                "Results", "Request XP", "Quiz"
             ],
             "Admin": [
                 "User access",
@@ -867,7 +867,7 @@ def sidebar(role: str, name: str) -> str:
                 "Award XP",
                 "Student record",
                 "Analysis background",
-                "Analysis progress",
+                "Analysis results",
                 "Analysis XP",
                 "Analysis material",
             ],
@@ -900,11 +900,11 @@ def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
             "Profile", "Materials", "My XP", "Leaderboard",
-            "Progress", "Request XP", "Quiz",
+            "Results", "Request XP", "Quiz",
         ],
         "Admin": [
             "User access", "CRUD", "Material", "Quiz", "Award XP",
-            "Student record", "Analysis background", "Analysis progress",
+            "Student record", "Analysis background", "Analysis results",
             "Analysis XP", "Analysis material",
         ],
     }
@@ -1250,7 +1250,7 @@ def leaderboard_data(
 
 
 def progress_page() -> None:
-    heading("", "Progress")
+    heading("", "Results")
     user = st.session_state.get("user", {})
     progress, _ = fetch_student_row(
         "stud_progress", user.get("no_matrik"), DEMO_PROGRESS
@@ -2728,7 +2728,7 @@ def analysis_background_page() -> None:
 def analysis_progress_page() -> None:
     heading(
         "Academic intelligence",
-        "Analysis progress",
+        "Analysis results",
         "Review assessment marks and performance zones.",
     )
     progress, _ = fetch_table("stud_progress", DEMO_PROGRESS)
@@ -3461,7 +3461,7 @@ def main() -> None:
     page = mobile_navigation(role, page)
     if role == "Student":
         {
-            "Progress": progress_page,
+            "Results": progress_page,
             "Materials": materials_page,
             "Quiz": quiz_page,
             "My XP": my_xp_page,
@@ -3473,7 +3473,7 @@ def main() -> None:
         {
             "Student record": admin_student_records_page,
             "Analysis background": analysis_background_page,
-            "Analysis progress": analysis_progress_page,
+            "Analysis results": analysis_progress_page,
             "Analysis XP": analysis_xp_page,
             "Analysis material": analysis_material_page,
             "CRUD": admin_crud_page,
