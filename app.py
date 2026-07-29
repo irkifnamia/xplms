@@ -268,6 +268,46 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
 [role="listbox"], [role="option"] { background:#fff !important; }
 
 @media(max-width:700px){
+  /* Keep Streamlit chrome hidden, but restore the mobile sidebar opener for Admin. */
+  [data-testid="stHeader"] {
+    display:block !important;
+    visibility:visible !important;
+    height:0 !important;
+    min-height:0 !important;
+    background:transparent !important;
+  }
+  [data-testid="stHeader"] [data-testid="stToolbar"],
+  [data-testid="stHeader"] [data-testid="stToolbarActions"],
+  [data-testid="stHeader"] [data-testid="stStatusWidget"],
+  [data-testid="stHeader"] [data-testid="stDeployButton"] {
+    display:none !important;
+  }
+  [data-testid="collapsedControl"] {
+    display:flex !important;
+    visibility:visible !important;
+    position:fixed !important;
+    top:.7rem !important;
+    left:.7rem !important;
+    z-index:1000000 !important;
+  }
+  [data-testid="collapsedControl"] button {
+    width:2.75rem !important;
+    height:2.75rem !important;
+    min-height:2.75rem !important;
+    padding:.45rem !important;
+    border:1px solid #c4d1df !important;
+    border-radius:12px !important;
+    background:#fff !important;
+    box-shadow:0 4px 14px rgba(23,35,58,.14) !important;
+  }
+  [data-testid="collapsedControl"] button *,
+  [data-testid="collapsedControl"] svg {
+    color:#17233a !important;
+    fill:#17233a !important;
+  }
+  body:has(.student-sidebar-marker) [data-testid="collapsedControl"] {
+    display:none !important;
+  }
   body:has(.student-sidebar-marker) .block-container {
     padding:0.65rem 0.72rem 8.25rem !important;
   }
@@ -378,11 +418,7 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     margin-top:.2rem;
     font-size:.72rem;
   }
-  [data-testid="collapsedControl"]:has(+ section .student-sidebar-marker) {
-    display:none !important;
-  }
-
-  .block-container { padding:1rem .9rem 4.5rem; }
+  .block-container { padding:4rem .9rem 4.5rem; }
   .hero { padding:20px; border-radius:17px; }
   .hero h1 { font-size:1.55rem; }
   .metric-value { font-size:1.4rem; }
