@@ -75,10 +75,10 @@ st.markdown(
     }
 
     [data-testid="stHeader"] {
-        display: block !important;
-        visibility: visible !important;
-        height: 3.5rem !important;
-        min-height: 3.5rem !important;
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        min-height: 0 !important;
         background: transparent !important;
         pointer-events: none !important;
     }
@@ -107,7 +107,7 @@ st.markdown(
     }
 
     [data-testid="stAppViewContainer"] .block-container {
-        padding-top: 1.5rem !important;
+        padding-top: 0.5rem !important;
     }
     </style>
     """,
@@ -284,6 +284,9 @@ button:disabled, button:disabled p, button:disabled span {
 
 /* A collapsed preference must never make desktop navigation disappear. */
 @media(min-width:701px){
+  [class*="st-key-mobile_navigation_"] {
+    display:none !important;
+  }
   [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker) {
     display:none !important;
   }
@@ -355,8 +358,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
 @media(max-width:700px){
   /* Keep Streamlit chrome hidden, but restore the mobile sidebar opener for Admin. */
   [data-testid="stHeader"] {
-    display:block !important;
-    visibility:visible !important;
+    display:none !important;
+    visibility:hidden !important;
     height:0 !important;
     min-height:0 !important;
     background:transparent !important;
@@ -395,7 +398,7 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     fill:#17233a !important;
   }
   body:has(.student-sidebar-marker) .block-container {
-    padding:.8rem 0.72rem 4.5rem !important;
+    padding:.35rem 0.72rem 4.5rem !important;
   }
   body:has(.student-sidebar-marker) .hero {
     padding:15px 16px;
@@ -447,10 +450,30 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     min-width:max-content;
   }
 
-  .block-container { padding:.8rem .9rem 4.5rem; }
+  .block-container { padding:.35rem .9rem 4.5rem !important; }
   [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker) {
     display:flex !important;
     margin-bottom:.25rem;
+  }
+  [class*="st-key-mobile_navigation_"] {
+    display:block !important;
+    margin-top:0 !important;
+    padding-top:0 !important;
+  }
+  [class*="st-key-mobile_navigation_"] [data-baseweb="select"],
+  [class*="st-key-mobile_navigation_"] [data-baseweb="select"] > div,
+  [class*="st-key-mobile_navigation_"] [data-baseweb="select"] > div > div {
+    background-color:#17834d !important;
+    border-color:#17834d !important;
+    color:#fff !important;
+  }
+  [class*="st-key-mobile_navigation_"] [data-baseweb="select"] span,
+  [class*="st-key-mobile_navigation_"] [data-baseweb="select"] input {
+    color:#fff !important;
+    -webkit-text-fill-color:#fff !important;
+  }
+  [class*="st-key-mobile_navigation_"] [data-baseweb="select"] svg {
+    fill:#fff !important;
   }
   [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
   [data-testid="stHorizontalBlock"] {
@@ -891,7 +914,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
     mobile_key = f"mobile_page_{role.lower()}"
     if st.session_state.get(mobile_key) not in menus[role]:
         st.session_state[mobile_key] = st.session_state[active_key]
-    with st.container():
+    with st.container(key=f"mobile_navigation_{role.lower()}"):
         st.markdown('<span class="mobile-nav-marker"></span>', unsafe_allow_html=True)
         with st.container(
             horizontal=True,
