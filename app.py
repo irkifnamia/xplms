@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import io
 import hashlib
 import json
@@ -168,6 +169,14 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
 .metric-label { color:var(--muted); font-size:.79rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
 .metric-value { color:#17233a; font-family:'Manrope'; font-size:1.7rem; font-weight:800; margin:.15rem 0; }
 .metric-note { color:var(--muted); font-size:.82rem; }
+.result-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+.result-card { background:#fff; border:1px solid var(--line); border-top:4px solid var(--brand);
+  border-radius:16px; padding:17px 18px; box-shadow:0 4px 14px rgba(31,93,170,.07); }
+.result-card:nth-child(3n+2) { border-top-color:var(--cyan); }
+.result-card:nth-child(3n) { border-top-color:var(--gold); }
+.result-title { color:var(--ink); font-weight:800; font-size:.86rem; letter-spacing:.035em; }
+.result-mark { color:var(--brand-dark); font-family:'Manrope'; font-size:1.8rem; font-weight:800; margin:.3rem 0; }
+.result-meta { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; }
 .pill { display:inline-block; border-radius:999px; padding:4px 9px; font-size:.73rem; font-weight:700;
   color:#174c87; background:#e8f1fc; border:1px solid #b8d2ef; }
 .brand { font-family:'Manrope'; font-size:1.35rem; font-weight:800; letter-spacing:-.04em; color:#17233a; }
@@ -416,6 +425,7 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
   body:has(.student-sidebar-marker) [data-testid="stDataFrame"] {
     font-size:.78rem;
   }
+  .result-grid { grid-template-columns:1fr; gap:10px; }
   body:has(.student-sidebar-marker) button {
     min-height:2.75rem;
     font-size:.88rem;
@@ -471,13 +481,17 @@ EMPTY_MATERIALS = pd.DataFrame(
 def db() -> Client | None:
     if create_client is None:
         return None
+    if "_supabase_client" in st.session_state:
+        return st.session_state["_supabase_client"]
     try:
         service_key = st.secrets.get("SUPABASE_SECRET_KEY") or st.secrets.get(
             "SUPABASE_SERVICE_ROLE_KEY"
         )
         if not service_key:
             return None
-        return create_client(st.secrets["SUPABASE_URL"], service_key)
+        client = create_client(st.secrets["SUPABASE_URL"], service_key)
+        st.session_state["_supabase_client"] = client
+        return client
     except Exception:
         return None
 
@@ -636,10 +650,11 @@ def generate_material_quiz(material: pd.Series, question_count: int) -> tuple[bo
         return False, f"Quiz generation failed: {exc}"
 
 
-def metric(label: str, value: str, note: str) -> None:
+def metric(label: str, value: str, note: str = "") -> None:
+    note_html = f'<div class="metric-note">{note}</div>' if note else ""
     st.markdown(
         f'<div class="metric-card"><div class="metric-label">{label}</div>'
-        f'<div class="metric-value">{value}</div><div class="metric-note">{note}</div></div>',
+        f'<div class="metric-value">{value}</div>{note_html}</div>',
         unsafe_allow_html=True,
     )
 
@@ -1111,7 +1126,7 @@ def leaderboard_data(
 
 
 def progress_page() -> None:
-    heading("Academic record", "Progress & results", "Review your latest marks and learning progress.")
+    heading("", "Progress")
     progress, _ = fetch_table("stud_progress", DEMO_PROGRESS)
     user = st.session_state.get("user", {})
     if user.get("no_matrik") and "NO MATRIK" in progress.columns:
@@ -1145,20 +1160,19 @@ def progress_page() -> None:
     completed = [item["Mark"] for item in results if item["Mark"] is not None]
     if not completed:
         st.info("Marks have not been published yet.")
-    results_table = pd.DataFrame(results)
-    results_table["Mark"] = results_table["Mark"].apply(
-        lambda value: "—" if pd.isna(value) else f"{float(value):.1f}"
-    )
-    st.dataframe(
-        results_table,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Component": st.column_config.TextColumn("Assessment", width="large"),
-            "Mark": st.column_config.TextColumn("Mark", width="small"),
-            "Zone": st.column_config.TextColumn("Zone", width="medium"),
-            "Status": st.column_config.TextColumn("Status", width="small"),
-        },
+    cards = []
+    for item in results:
+        mark_text = "—" if item["Mark"] is None else f"{item['Mark']:.1f}"
+        cards.append(
+            '<div class="result-card">'
+            f'<div class="result-title">{html.escape(str(item["Component"]).upper())}</div>'
+            f'<div class="result-mark">{mark_text}</div>'
+            f'<div class="result-meta">{html.escape(str(item["Zone"]).upper())} · '
+            f'{html.escape(str(item["Status"]).upper())}</div></div>'
+        )
+    st.markdown(
+        f'<div class="result-grid">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -1259,21 +1273,21 @@ def profile_page() -> None:
             )
             matric = row.get("NO MATRIK", user.get("no_matrik", "—"))
             values = [
-                ("Student name", name, "Registered name"),
-                ("No Matrik", matric, "Student identifier"),
-                ("Class", row.get("KELAS", row.get("cohort", "—")), "Current class"),
-                ("System", row.get("SISTEM", row.get("programme", "—")), "Academic system"),
-                ("PKA", row.get("PKA", "—"), "Student background"),
+                ("Student name", name),
+                ("No Matrik", matric),
+                ("Class", row.get("KELAS", row.get("cohort", "—"))),
+                ("System", row.get("SISTEM", row.get("programme", "—"))),
+                ("PKA", row.get("PKA", "—")),
             ]
             columns = st.columns(5)
-            for column, (label, value, note) in zip(columns, values):
+            for column, (label, value) in zip(columns, values):
                 with column:
-                    metric(label, "—" if pd.isna(value) else str(value), note)
+                    metric(label, "—" if pd.isna(value) else str(value).upper())
             hidden = {"id", "created_at", "updated_at"}
             details = pd.DataFrame([
                 {
-                    "Field": str(field).replace("_", " ").title(),
-                    "Information": "—" if pd.isna(value) else str(value),
+                    "Field": str(field).replace("_", " ").upper(),
+                    "Information": "—" if pd.isna(value) else str(value).upper(),
                 }
                 for field, value in row.items()
                 if field not in hidden
@@ -1644,12 +1658,15 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
             )
             if live and item.get("file_path"):
                 try:
-                    file_data = db().storage.from_("materials").download(str(item["file_path"]))
-                    c3.download_button(
+                    signed = db().storage.from_("materials").create_signed_url(
+                        str(item["file_path"]), 600
+                    )
+                    url = signed.get("signedURL") or signed.get("signedUrl")
+                    if not url:
+                        raise ValueError("No signed material URL returned.")
+                    c3.link_button(
                         "Download",
-                        data=file_data,
-                        file_name=str(item["file_path"]).rsplit("/", 1)[-1],
-                        key=f"material_{i}",
+                        url,
                         width="stretch",
                     )
                 except Exception:
