@@ -452,6 +452,43 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     display:flex !important;
     margin-bottom:.25rem;
   }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-testid="stHorizontalBlock"] {
+    display:flex !important;
+    flex-direction:row !important;
+    flex-wrap:nowrap !important;
+    gap:.55rem !important;
+  }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-testid="stColumn"] {
+    min-width:0 !important;
+  }
+  [class*="st-key-mobile_sign_out_"] button {
+    background:#c62828 !important;
+    border-color:#c62828 !important;
+    color:#fff !important;
+  }
+  [class*="st-key-mobile_sign_out_"] button *,
+  [class*="st-key-mobile_sign_out_"] button p {
+    color:#fff !important;
+  }
+  [class*="st-key-mobile_sign_out_"] button:hover {
+    background:#a91f1f !important;
+    border-color:#a91f1f !important;
+  }
+  [class*="st-key-mobile_page_"] [data-baseweb="select"] > div {
+    background:#17834d !important;
+    border-color:#17834d !important;
+    color:#fff !important;
+  }
+  [class*="st-key-mobile_page_"] [data-baseweb="select"] span,
+  [class*="st-key-mobile_page_"] [data-baseweb="select"] div {
+    color:#fff !important;
+    -webkit-text-fill-color:#fff !important;
+  }
+  [class*="st-key-mobile_page_"] [data-baseweb="select"] svg {
+    fill:#fff !important;
+  }
   .hero { padding:20px; border-radius:17px; }
   .hero h1 { font-size:1.55rem; }
   .metric-value { font-size:1.4rem; }
@@ -846,21 +883,25 @@ def mobile_navigation(role: str, current_page: str) -> str:
         st.session_state[mobile_key] = st.session_state[active_key]
     with st.container():
         st.markdown('<span class="mobile-nav-marker"></span>', unsafe_allow_html=True)
-        if st.button(
-            "SIGN OUT",
-            key=f"mobile_sign_out_{role.lower()}",
-            use_container_width=True,
-        ):
-            st.session_state.clear()
-            st.rerun()
-        st.selectbox(
-            "PAGE",
-            menus[role],
-            format_func=str.upper,
-            key=mobile_key,
-            on_change=sync_navigation,
-            args=(mobile_key, active_key),
-        )
+        signout_column, page_column = st.columns([1, 2.2])
+        with signout_column:
+            if st.button(
+                "SIGN OUT",
+                key=f"mobile_sign_out_{role.lower()}",
+                use_container_width=True,
+            ):
+                st.session_state.clear()
+                st.rerun()
+        with page_column:
+            st.selectbox(
+                "PAGE",
+                menus[role],
+                format_func=str.upper,
+                key=mobile_key,
+                on_change=sync_navigation,
+                args=(mobile_key, active_key),
+                label_visibility="collapsed",
+            )
     return st.session_state[active_key]
 
 
@@ -1782,7 +1823,7 @@ def student_leaderboard_page() -> None:
 
     xp_individual, xp_class, progress_individual, progress_class = st.tabs([
         "XP (IND)", "XP (CLASS)",
-        "PROGRESS (IND)", "PROGRESS (CLASS)",
+        "PROG (IND)", "PROG (CLASS)",
     ])
     with xp_individual:
         if individuals.empty:
