@@ -56,7 +56,6 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    [data-testid="stHeader"],
     [data-testid="stToolbar"],
     [data-testid="stToolbarActions"],
     [data-testid="stStatusWidget"],
@@ -69,8 +68,38 @@ st.markdown(
         height: 0 !important;
     }
 
+    [data-testid="stHeader"] {
+        display: block !important;
+        visibility: visible !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        background: transparent !important;
+    }
+
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="collapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        position: fixed !important;
+        top: 0.75rem !important;
+        left: 0.75rem !important;
+        z-index: 1000000 !important;
+    }
+
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="collapsedControl"] button {
+        width: 2.75rem !important;
+        height: 2.75rem !important;
+        min-height: 2.75rem !important;
+        padding: 0.45rem !important;
+        border: 1px solid #c4d1df !important;
+        border-radius: 12px !important;
+        background: #ffffff !important;
+        box-shadow: 0 4px 14px rgba(23,35,58,.14) !important;
+    }
+
     [data-testid="stAppViewContainer"] .block-container {
-        padding-top: 1rem !important;
+        padding-top: 4rem !important;
     }
     </style>
     """,
@@ -309,12 +338,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     color:#17233a !important;
     fill:#17233a !important;
   }
-  body:has(.student-sidebar-marker) [data-testid="collapsedControl"],
-  body:has(.student-sidebar-marker) [data-testid="stExpandSidebarButton"] {
-    display:none !important;
-  }
   body:has(.student-sidebar-marker) .block-container {
-    padding:0.65rem 0.72rem 8.25rem !important;
+    padding:4rem 0.72rem 4.5rem !important;
   }
   body:has(.student-sidebar-marker) .hero {
     padding:15px 16px;
@@ -361,68 +386,6 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     min-width:max-content;
   }
 
-  /* Student navigation becomes a thumb-friendly fixed bottom bar. */
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker) {
-    display:block !important;
-    position:fixed !important;
-    inset:auto 0 0 0 !important;
-    width:100vw !important;
-    min-width:100vw !important;
-    height:auto !important;
-    z-index:999999 !important;
-    transform:none !important;
-    border:0 !important;
-    border-top:1px solid #cbd6e2 !important;
-    box-shadow:0 -6px 20px rgba(23,35,58,.12);
-  }
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
-  [data-testid="stSidebarContent"] {
-    padding:.38rem .45rem .45rem !important;
-    background:#fff !important;
-  }
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
-  [data-testid="stSidebarContent"] > div > div > div > :is(
-    [data-testid="stImage"],
-    [data-testid="stCaptionContainer"],
-    [data-testid="stMarkdownContainer"],
-    [data-testid="stSelectbox"],
-    [data-testid="stDivider"]
-  ) { display:none !important; }
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
-  [data-testid="stRadio"] [role="radiogroup"] {
-    display:flex !important;
-    flex-direction:row !important;
-    gap:2px !important;
-    width:100% !important;
-  }
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
-  [data-testid="stRadio"] label {
-    flex:1 1 20%;
-    min-width:0;
-    min-height:48px;
-    margin:0 !important;
-    padding:.36rem .12rem !important;
-    display:flex !important;
-    justify-content:center;
-    text-align:center;
-    line-height:1.12;
-    font-size:.69rem;
-  }
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
-  [data-testid="stRadio"] label > div:first-child {
-    display:none !important;
-  }
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
-  [data-testid="stRadio"] label:has(input:checked) {
-    background:#e8f1fc !important;
-    color:#154b8c !important;
-  }
-  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
-  .stButton > button {
-    min-height:2rem !important;
-    margin-top:.2rem;
-    font-size:.72rem;
-  }
   .block-container { padding:4rem .9rem 4.5rem; }
   .hero { padding:20px; border-radius:17px; }
   .hero h1 { font-size:1.55rem; }
@@ -702,71 +665,11 @@ def sidebar(role: str, name: str) -> str:
             for item in items
         }
         chosen = st.radio("Navigation", menus[role], format_func=lambda x: labels[x], label_visibility="collapsed")
-        if role == "Admin":
-            previous_sidebar_choice = st.session_state.get(
-                "_admin_sidebar_choice", chosen
-            )
-            if chosen != previous_sidebar_choice:
-                st.session_state.pop("admin_page_override", None)
-            st.session_state._admin_sidebar_choice = chosen
         st.divider()
         if st.button("Sign out", use_container_width=True):
             st.session_state.clear()
             st.rerun()
     return chosen
-
-
-def admin_page_menu(sidebar_page: str) -> str:
-    """Always-available navigation that does not depend on Streamlit's sidebar."""
-    pages = [
-        "Dashboard",
-        "Award XP",
-        "Student records",
-        "Materials",
-        "Analytics",
-        "User access",
-        "Data import",
-        "System",
-    ]
-    current_page = st.session_state.get("admin_page_override", sidebar_page)
-    st.markdown('<span class="admin-main-menu-marker"></span>', unsafe_allow_html=True)
-    with st.popover("☰ Navigation", use_container_width=False):
-        st.caption("Admin workspace")
-        for option in pages:
-            if st.button(
-                option,
-                key=f"admin_main_menu_{option}",
-                type="primary" if option == current_page else "secondary",
-                width="stretch",
-            ):
-                st.session_state.admin_page_override = option
-                st.rerun()
-        st.divider()
-        if st.button(
-            "Preview Student workspace",
-            key="admin_main_menu_preview_student",
-            width="stretch",
-        ):
-            st.session_state.admin_preview_role = "Student"
-            st.rerun()
-        if st.button("Sign out", key="admin_main_menu_signout", width="stretch"):
-            st.session_state.clear()
-            st.rerun()
-    return current_page
-
-
-def admin_preview_return_menu() -> None:
-    """Let an administrator leave the Student preview on every screen size."""
-    with st.popover("← Admin workspace", use_container_width=False):
-        st.caption("You are previewing the Student workspace.")
-        if st.button(
-            "Return to Admin workspace",
-            key="return_to_admin_workspace",
-            type="primary",
-            width="stretch",
-        ):
-            st.session_state.admin_preview_role = "Admin"
-            st.rerun()
 
 
 def login() -> None:
@@ -1697,10 +1600,6 @@ def main() -> None:
     if role not in {"Student", "Admin"}:
         role = "Student"
     page = sidebar(role, user["name"])
-    if role == "Admin":
-        page = admin_page_menu(page)
-    elif actual_role == "Admin":
-        admin_preview_return_menu()
     if role == "Student":
         {
             "Progress": progress_page,
