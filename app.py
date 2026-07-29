@@ -702,11 +702,50 @@ def sidebar(role: str, name: str) -> str:
             for item in items
         }
         chosen = st.radio("Navigation", menus[role], format_func=lambda x: labels[x], label_visibility="collapsed")
+        if role == "Admin":
+            previous_sidebar_choice = st.session_state.get(
+                "_admin_sidebar_choice", chosen
+            )
+            if chosen != previous_sidebar_choice:
+                st.session_state.pop("admin_page_override", None)
+            st.session_state._admin_sidebar_choice = chosen
         st.divider()
         if st.button("Sign out", use_container_width=True):
             st.session_state.clear()
             st.rerun()
     return chosen
+
+
+def admin_page_menu(sidebar_page: str) -> str:
+    """Always-available navigation that does not depend on Streamlit's sidebar."""
+    pages = [
+        "Dashboard",
+        "Award XP",
+        "Student records",
+        "Materials",
+        "Analytics",
+        "User access",
+        "Data import",
+        "System",
+    ]
+    current_page = st.session_state.get("admin_page_override", sidebar_page)
+    st.markdown('<span class="admin-main-menu-marker"></span>', unsafe_allow_html=True)
+    with st.popover("☰ Navigation", use_container_width=False):
+        st.caption("Admin workspace")
+        for option in pages:
+            if st.button(
+                option,
+                key=f"admin_main_menu_{option}",
+                type="primary" if option == current_page else "secondary",
+                width="stretch",
+            ):
+                st.session_state.admin_page_override = option
+                st.rerun()
+        st.divider()
+        if st.button("Sign out", key="admin_main_menu_signout", width="stretch"):
+            st.session_state.clear()
+            st.rerun()
+    return current_page
 
 
 def login() -> None:
@@ -1637,6 +1676,8 @@ def main() -> None:
     if role not in {"Student", "Admin"}:
         role = "Student"
     page = sidebar(role, user["name"])
+    if role == "Admin":
+        page = admin_page_menu(page)
     if role == "Student":
         {
             "Progress": progress_page,
