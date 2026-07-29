@@ -2748,7 +2748,13 @@ def user_access_page() -> None:
                             raise ValueError(f"Invalid role: {row['role']}")
                         matric = row.get("NO MATRIK")
                         matric_value = str(matric).strip() if pd.notna(matric) else ""
-                        email_value = str(row.get("email", "")).strip().lower()
+                        raw_email = row.get("email", "")
+                        email_value = (
+                            ""
+                            if pd.isna(raw_email)
+                            or str(raw_email).strip().lower() in {"", "none", "nan", "null"}
+                            else str(raw_email).strip().lower()
+                        )
                         password = (
                             matric_value
                             if role_value == "student"
@@ -2779,10 +2785,39 @@ def user_access_page() -> None:
                             "active": True,
                             "must_change_password": role_value == "admin",
                         })
-                    client.table("app_users").upsert(
-                        records, on_conflict="email"
-                    ).execute()
-                    st.success(f"{len(records)} user accounts imported.")
+                    inserted = 0
+                    updated = 0
+                    for record in records:
+                        if record["role"] == "student":
+                            existing = (
+                                client.table("app_users")
+                                .select("id")
+                                .eq("NO MATRIK", record["NO MATRIK"])
+                                .limit(1)
+                                .execute()
+                                .data
+                            )
+                        else:
+                            existing = (
+                                client.table("app_users")
+                                .select("id")
+                                .ilike("email", record["email"])
+                                .limit(1)
+                                .execute()
+                                .data
+                            )
+                        if existing:
+                            client.table("app_users").update(record).eq(
+                                "id", existing[0]["id"]
+                            ).execute()
+                            updated += 1
+                        else:
+                            client.table("app_users").insert(record).execute()
+                            inserted += 1
+                    st.success(
+                        f"{len(records)} user accounts processed: "
+                        f"{inserted} added, {updated} updated."
+                    )
                 except Exception as exc:
                     st.error(f"User import failed: {exc}")
 
