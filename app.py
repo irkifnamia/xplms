@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import bcrypt
 import pandas as pd
@@ -970,11 +972,19 @@ def xp_badge_page() -> None:
     else:
         st.success("All current XP badges unlocked.")
 
-    with st.expander("Submit mathematics discussion proof"):
-        st.write("Share evidence of a meaningful mathematics discussion for Admin review.")
+    with st.expander("Request XP with proof"):
+        st.write(
+            "Request XP for consultation, class participation, commitment or "
+            "a study group. An Admin must approve the evidence."
+        )
         with st.form("xp_proof_claim", clear_on_submit=True):
-            title = st.text_input("Discussion topic")
-            description = st.text_area("What did you discuss or learn?")
+            claim_type = st.selectbox(
+                "XP type",
+                ["consultation", "class_participation", "commitment", "study_group"],
+                format_func=lambda value: value.replace("_", " ").title(),
+            )
+            title = st.text_input("Request title")
+            description = st.text_area("Describe the activity and what you learned")
             proof = st.file_uploader("Proof image", type=["jpg", "jpeg", "png", "webp"])
             if st.form_submit_button("Send for approval", type="primary"):
                 if not title.strip() or not description.strip() or not proof:
@@ -992,7 +1002,7 @@ def xp_badge_page() -> None:
                             client.table("xp_claims").insert({
                                 "student_user_id": user["id"],
                                 "NO MATRIK": user["no_matrik"],
-                                "claim_type": "math_discussion",
+                                "claim_type": claim_type,
                                 "title": title.strip(),
                                 "description": description.strip(),
                                 "proof_path": path,
@@ -1228,110 +1238,206 @@ def admin_quiz_page() -> None:
 
 
 def quiz_page() -> None:
-    heading("Knowledge check", "In-app quizzes", "Complete material-based quizzes and earn XP automatically.")
-    quizzes_fallback = pd.DataFrame(
-        [{"id": 1, "title": "Algebra foundations", "instructions": "Choose the best answer.", "xp_reward": 25, "passing_score": 60, "status": "published"}]
+    heading(
+        "Daily knowledge check",
+        "Chapter quiz",
+        "Answer 10 random questions per chapter each day and earn automatic XP.",
     )
-    quizzes, live = fetch_table("quizzes", quizzes_fallback)
-    if "status" in quizzes.columns:
-        quizzes = quizzes[quizzes["status"] == "published"]
-    if quizzes.empty:
-        st.info("No quizzes are currently available.")
-        return
     user = st.session_state.user
-    for _, quiz in quizzes.iterrows():
-        with st.expander(f"{quiz['title']} · {quiz.get('xp_reward', 0)} XP"):
-            st.write(quiz.get("instructions", "Choose the best answer."))
-            if live:
-                previous = db().table("quiz_attempts").select("score,passed,completed_at").eq("quiz_id", quiz["id"]).eq("student_user_id", user["id"]).limit(1).execute().data
-                if previous:
-                    result = previous[0]
-                    st.success(f"Completed · Score {float(result['score']):.0f}% · {'Passed' if result['passed'] else 'Not passed'}")
-                    continue
-                questions = db().table("quiz_questions").select("*").eq("quiz_id", quiz["id"]).order("position").execute().data
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
+    materials, materials_live = fetch_table("materials", EMPTY_MATERIALS)
+    quizzes, quizzes_live = fetch_table("quizzes", pd.DataFrame())
+    live = materials_live and quizzes_live
+
+    if live:
+        quizzes = quizzes[quizzes.get("status") == "published"].copy()
+        if quizzes.empty or materials.empty:
+            st.info("No published chapter question banks are available.")
+            return
+        quiz_materials = quizzes.merge(
+            materials[["id", "chapter"]],
+            left_on="material_id",
+            right_on="id",
+            how="left",
+            suffixes=("_quiz", "_material"),
+        )
+        quiz_materials = quiz_materials.dropna(subset=["chapter"])
+        chapters = sorted(quiz_materials["chapter"].astype(int).unique().tolist())
+    else:
+        chapters = [1]
+        quiz_materials = pd.DataFrame(
+            [{"id_quiz": 1, "chapter": 1, "title": "Daily Chapter 1 quiz"}]
+        )
+
+    if not chapters:
+        st.info("Published quizzes must be linked to materials with a chapter.")
+        return
+    chapter = st.selectbox(
+        "Chapter",
+        chapters,
+        format_func=lambda value: f"Chapter {value}",
+    )
+
+    if live:
+        client = db()
+        try:
+            previous = (
+                client.table("quiz_attempts")
+                .select("score,correct_count,total_questions,xp_awarded,completed_at")
+                .eq("student_user_id", user["id"])
+                .eq("chapter", int(chapter))
+                .eq("attempt_date", today)
+                .limit(1)
+                .execute()
+                .data
+            )
+        except Exception:
+            st.error(
+                "Run supabase_migration_006_revised_xp_daily_quiz.sql "
+                "before using daily quizzes."
+            )
+            return
+        if previous:
+            result = previous[0]
+            st.success(
+                f"Today's Chapter {chapter} quiz is complete · "
+                f"{int(result['correct_count'])}/{int(result['total_questions'])} correct · "
+                f"{int(result['xp_awarded'])} XP awarded."
+            )
+            return
+        chapter_quizzes = quiz_materials[
+            quiz_materials["chapter"].astype(int) == int(chapter)
+        ]
+        quiz_ids = chapter_quizzes["id_quiz"].astype(int).tolist()
+        questions = []
+        for quiz_id in quiz_ids:
+            rows = (
+                client.table("quiz_questions")
+                .select("*")
+                .eq("quiz_id", quiz_id)
+                .execute()
+                .data
+            )
+            questions.extend(rows)
+    else:
+        quiz_ids = [1]
+        questions = [
+            {
+                "id": index,
+                "quiz_id": 1,
+                "question": f"Demo question {index}: what is {index} + 1?",
+                "options": [str(index), str(index + 1), str(index + 2), str(index + 3)],
+                "correct_index": 1,
+                "explanation": f"{index} + 1 equals {index + 1}.",
+            }
+            for index in range(1, 11)
+        ]
+
+    if len(questions) < 10:
+        st.info(
+            f"Chapter {chapter} currently has {len(questions)} questions. "
+            "An Admin must generate at least 10 before the daily quiz opens."
+        )
+        return
+
+    seed_text = f"{user['id']}:{chapter}:{today}"
+    seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:8], 16)
+    daily_questions = (
+        pd.DataFrame(questions).sample(n=10, random_state=seed).to_dict("records")
+    )
+    st.caption(
+        "XP rule: 1 XP for an attempted question; a correct answer earns 2 XP instead."
+    )
+    with st.form(f"daily_quiz_{chapter}_{today}"):
+        answers = {}
+        for number, question in enumerate(daily_questions, start=1):
+            options = question["options"]
+            if isinstance(options, str):
+                options = json.loads(options)
+            answers[str(question["id"])] = st.radio(
+                f"{number}. {question['question']}",
+                range(len(options)),
+                format_func=lambda index, opts=options: opts[index],
+                index=None,
+                key=f"daily_answer_{chapter}_{today}_{question['id']}",
+            )
+        if st.form_submit_button("Submit today's quiz", type="primary"):
+            if any(answer is None for answer in answers.values()):
+                st.error("Answer all 10 questions before submitting.")
             else:
-                questions = [
-                    {"id": 1, "question": "What is 2 + 3?", "options": ["4", "5", "6", "7"], "correct_index": 1, "explanation": "2 + 3 equals 5."},
-                    {"id": 2, "question": "Which number is even?", "options": ["3", "5", "8", "9"], "correct_index": 2, "explanation": "8 is divisible by 2."},
-                    {"id": 3, "question": "What is 4 × 2?", "options": ["6", "7", "8", "9"], "correct_index": 2, "explanation": "Four groups of two equal 8."},
-                ]
-            if not questions:
-                st.warning("This quiz has no questions.")
-                continue
-            with st.form(f"quiz_attempt_{quiz['id']}"):
-                answers = {}
-                for question in questions:
-                    options = question["options"]
-                    if isinstance(options, str):
-                        options = json.loads(options)
-                    answers[str(question["id"])] = st.radio(
-                        question["question"],
-                        range(len(options)),
-                        format_func=lambda index, opts=options: opts[index],
-                        index=None,
-                        key=f"answer_{quiz['id']}_{question['id']}",
+                correct = sum(
+                    int(answers[str(question["id"])])
+                    == int(question["correct_index"])
+                    for question in daily_questions
+                )
+                total_questions = len(daily_questions)
+                score = correct / total_questions * 100
+                xp_awarded = total_questions + correct
+                if not live:
+                    st.success(
+                        f"Demo result: {correct}/10 correct · {xp_awarded} XP."
                     )
-                if st.form_submit_button("Submit quiz", type="primary"):
-                    if any(answer is None for answer in answers.values()):
-                        st.error("Answer every question before submitting.")
-                    else:
-                        correct = sum(
-                            int(answers[str(question["id"])]) == int(question["correct_index"])
-                            for question in questions
+                else:
+                    try:
+                        attempt = client.table("quiz_attempts").insert({
+                            "quiz_id": int(quiz_ids[0]),
+                            "student_user_id": user["id"],
+                            "NO MATRIK": user["no_matrik"],
+                            "answers": answers,
+                            "score": score,
+                            "correct_count": correct,
+                            "total_questions": total_questions,
+                            "passed": score >= 60,
+                            "chapter": int(chapter),
+                            "attempt_date": today,
+                            "xp_awarded": xp_awarded,
+                        }).execute().data[0]
+                        event = client.table("xp_events").insert({
+                            "NO MATRIK": user["no_matrik"],
+                            "rule_code": "quiz_completion",
+                            "points": xp_awarded,
+                            "source_id": f"daily-quiz-{chapter}-{today}",
+                            "reason": (
+                                f"Daily Chapter {chapter} quiz: "
+                                f"{correct}/{total_questions} correct"
+                            ),
+                            "award_mode": "automatic",
+                            "awarded_by": None,
+                        }).execute().data[0]
+                        client.table("quiz_attempts").update({
+                            "xp_event_id": event["id"]
+                        }).eq("id", attempt["id"]).execute()
+                        st.success(
+                            f"{correct}/10 correct · {xp_awarded} XP awarded."
                         )
-                        score = correct / len(questions) * 100
-                        passed = score >= float(quiz.get("passing_score", 60))
-                        if not live:
-                            (st.success if passed else st.warning)(f"Demo score: {score:.0f}%")
-                        else:
-                            attempt = db().table("quiz_attempts").insert({
-                                "quiz_id": quiz["id"],
-                                "student_user_id": user["id"],
-                                "NO MATRIK": user["no_matrik"],
-                                "answers": answers,
-                                "score": score,
-                                "correct_count": correct,
-                                "total_questions": len(questions),
-                                "passed": passed,
-                            }).execute().data[0]
-                            xp_awarded = 0
-                            if passed and int(quiz.get("xp_reward", 0)) > 0:
-                                xp_awarded = int(quiz["xp_reward"])
-                                event = db().table("xp_events").insert({
-                                    "NO MATRIK": user["no_matrik"],
-                                    "rule_code": "quiz_completion",
-                                    "points": xp_awarded,
-                                    "source_id": f"quiz-{quiz['id']}",
-                                    "reason": f"Passed quiz: {quiz['title']}",
-                                    "award_mode": "automatic",
-                                    "awarded_by": None,
-                                }).execute().data[0]
-                                db().table("quiz_attempts").update({"xp_event_id": event["id"]}).eq("id", attempt["id"]).execute()
-                            if passed:
-                                st.success(f"Passed with {score:.0f}%. {xp_awarded} XP awarded.")
-                            else:
-                                st.warning(f"Score: {score:.0f}%. The passing score is {quiz.get('passing_score', 60)}%.")
-                            st.rerun()
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Quiz result could not be saved: {exc}")
 
 
 def award_xp_page() -> None:
     heading(
         "Recognition",
         "Award experience points",
-        "Recognise academic consultation and meaningful class participation.",
+        "Award consultation, class participation and commitment, or review student requests.",
     )
     students, students_live = merged_students()
     rules_fallback = pd.DataFrame(
         [
             {"code": "consultation", "name": "Consultation", "default_points": 20, "award_mode": "manual"},
             {"code": "class_participation", "name": "Class participation", "default_points": 10, "award_mode": "manual"},
+            {"code": "commitment", "name": "Commitment", "default_points": 10, "award_mode": "manual"},
         ]
     )
     rules, rules_live = fetch_table("xp_rules", rules_fallback)
     if "award_mode" in rules.columns:
         rules = rules[rules["award_mode"] == "manual"]
     if "code" in rules.columns:
-        rules = rules[rules["code"].isin(["consultation", "class_participation"])]
+        rules = rules[
+            rules["code"].isin(
+                ["consultation", "class_participation", "commitment"]
+            )
+        ]
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
 
@@ -1390,10 +1496,11 @@ def award_xp_page() -> None:
                 except Exception as exc:
                     st.error(f"XP could not be awarded: {exc}")
 
-    st.subheader("Mathematics discussion claims")
+    st.subheader("Student XP requests")
     claims_fallback = pd.DataFrame(
         [{
-            "id": 1, "NO MATRIK": "S24001", "title": "Algebra discussion",
+            "id": 1, "NO MATRIK": "S24001", "claim_type": "study_group",
+            "title": "Algebra study group",
             "description": "Discussed simultaneous equations with classmates.",
             "proof_path": "", "status": "pending", "created_at": "2026-07-29",
         }]
@@ -1406,7 +1513,11 @@ def award_xp_page() -> None:
     else:
         client = db()
         for _, claim in claims.iterrows():
-            with st.expander(f"{claim.get('title', 'Math discussion')} · {claim.get('NO MATRIK', '')}"):
+            claim_label = str(claim.get("claim_type", "study_group")).replace("_", " ").title()
+            with st.expander(
+                f"{claim_label} · {claim.get('title', 'XP request')} · "
+                f"{claim.get('NO MATRIK', '')}"
+            ):
                 st.write(claim.get("description", ""))
                 st.caption(f"Submitted {claim.get('created_at', 'recently')}")
                 proof_path = claim.get("proof_path")
@@ -1425,11 +1536,12 @@ def award_xp_page() -> None:
                         st.success("Demo claim approved.")
                     else:
                         try:
-                            rule = client.table("xp_rules").select("default_points").eq("code", "math_discussion").limit(1).execute().data
+                            rule_code = str(claim.get("claim_type", "study_group"))
+                            rule = client.table("xp_rules").select("default_points").eq("code", rule_code).limit(1).execute().data
                             points = int(rule[0]["default_points"]) if rule else 20
                             event = client.table("xp_events").insert({
                                 "NO MATRIK": claim["NO MATRIK"],
-                                "rule_code": "math_discussion",
+                                "rule_code": rule_code,
                                 "points": points,
                                 "source_id": f"claim-{claim['id']}",
                                 "reason": claim["title"],
@@ -1462,9 +1574,9 @@ def award_xp_page() -> None:
 
     st.subheader("How XP is awarded")
     st.markdown(
-        "- **Admin awards:** consultation and class participation.\n"
-        "- **Admin-approved claims:** student mathematics discussion with image proof.\n"
-        "- **Automatic awards:** successful in-app material quizzes."
+        "- **Admin awards:** consultation, class participation and commitment.\n"
+        "- **Admin-approved requests:** consultation, class participation, commitment or study group with proof.\n"
+        "- **Automatic awards:** daily in-app chapter quizzes."
     )
     if not (students_live and rules_live):
         st.caption("Showing the XP award workflow with demo data.")
