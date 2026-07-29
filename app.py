@@ -666,8 +666,7 @@ def polish_chart(fig: Any) -> Any:
 
 def heading(eyebrow: str, title: str, copy: str = "") -> None:
     st.markdown(
-        f'<div class="hero"><div class="topline">{eyebrow}</div>'
-        f"<h1>{title}</h1><p>{copy}</p></div>",
+        f'<div class="hero"><h1>{title.upper()}</h1></div>',
         unsafe_allow_html=True,
     )
 
@@ -708,19 +707,19 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Progress", "Materials", "Quiz", "Leaderboard", "Profile", "XP"
+                "Profile", "Materials", "Leaderboard", "Progress", "XP", "Quiz"
             ],
             "Admin": [
+                "User access",
+                "CRUD",
+                "Material",
+                "Quiz",
+                "Award XP",
                 "Student record",
                 "Analysis background",
                 "Analysis progress",
                 "Analysis XP",
                 "Analysis material",
-                "CRUD",
-                "Award XP",
-                "User access",
-                "Material",
-                "Quiz",
             ],
         }
         labels = {item: item.upper() for items in menus.values() for item in items}
@@ -1006,7 +1005,7 @@ def leaderboard_data(
     )
     individuals["Badge"] = pd.cut(
         individuals["Overall XP"],
-        bins=[-1, 99, 299, 599, 999, float("inf")],
+        bins=[float("-inf"), 99, 299, 599, 999, float("inf")],
         labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
     ).astype(str)
 
@@ -1031,7 +1030,7 @@ def leaderboard_data(
     )
     classes["Class Badge"] = pd.cut(
         classes["Overall XP Average"],
-        bins=[-1, 99, 299, 599, 999, float("inf")],
+        bins=[float("-inf"), 99, 299, 599, 999, float("inf")],
         labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
     ).astype(str)
     return individuals, classes, available_months, selected_month
@@ -1070,12 +1069,6 @@ def progress_page() -> None:
             "Status": "Available" if mark is not None else "Pending",
         })
     completed = [item["Mark"] for item in results if item["Mark"] is not None]
-    a, b, c = st.columns(3)
-    with a: metric("Results available", str(len(completed)), f"of {len(results)} components")
-    with b: metric("Current average", f"{sum(completed)/len(completed):.1f}" if completed else "—", "Based on available marks")
-    with c: metric("Matric number", str(row.get("NO MATRIK", user.get("no_matrik", "—"))), "Student identifier")
-
-    st.subheader("Assessment results")
     if not completed:
         st.info("Marks have not been published yet.")
     results_table = pd.DataFrame(results)
@@ -1095,7 +1088,7 @@ def progress_page() -> None:
     )
 
 
-def profile_page() -> None:
+def _legacy_profile_page() -> None:
     heading("Student information", "My profile", "View the background information linked to your matric number.")
     background, _ = fetch_table("stud_background", DEMO_STUDENTS)
     user = st.session_state.get("user", {})
@@ -1169,6 +1162,82 @@ def profile_page() -> None:
                     st.success("Password changed successfully.")
 
 
+def profile_page() -> None:
+    heading("", "Profile")
+    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+    user = st.session_state.get("user", {})
+    if user.get("no_matrik") and "NO MATRIK" in background.columns:
+        own = background[
+            background["NO MATRIK"].astype(str) == str(user["no_matrik"])
+        ]
+        row = own.iloc[0] if not own.empty else None
+    else:
+        row = background.iloc[0] if not background.empty else None
+
+    profile_tab, password_tab = st.tabs(["PROFILE", "CHANGE PASSWORD"])
+    with profile_tab:
+        if row is None:
+            st.info("No student background record is linked to this account.")
+        else:
+            name = row.get(
+                "NICKNAME PELAJAR",
+                row.get("NAMA PELAJAR", row.get("name", user.get("name", "—"))),
+            )
+            matric = row.get("NO MATRIK", user.get("no_matrik", "—"))
+            values = [
+                ("Student name", name, "Registered name"),
+                ("No Matrik", matric, "Student identifier"),
+                ("Class", row.get("KELAS", row.get("cohort", "—")), "Current class"),
+                ("System", row.get("SISTEM", row.get("programme", "—")), "Academic system"),
+                ("PKA", row.get("PKA", "—"), "Student background"),
+            ]
+            columns = st.columns(5)
+            for column, (label, value, note) in zip(columns, values):
+                with column:
+                    metric(label, "—" if pd.isna(value) else str(value), note)
+            hidden = {"id", "created_at", "updated_at"}
+            details = pd.DataFrame([
+                {
+                    "Field": str(field).replace("_", " ").title(),
+                    "Information": "—" if pd.isna(value) else str(value),
+                }
+                for field, value in row.items()
+                if field not in hidden
+            ])
+            st.dataframe(details, hide_index=True, width="stretch")
+
+    with password_tab:
+        with st.form("student_change_password_tabs"):
+            current_password = st.text_input("Current password", type="password")
+            new_password = st.text_input("New password", type="password")
+            confirm_password = st.text_input("Confirm new password", type="password")
+            if st.form_submit_button("Change password", type="primary"):
+                if is_demo():
+                    st.success("Password change is disabled in demo mode.")
+                elif new_password != confirm_password:
+                    st.error("The new passwords do not match.")
+                elif not valid_password(new_password):
+                    st.error("Use at least 10 characters with uppercase, lowercase and a number.")
+                else:
+                    client = db()
+                    account = (
+                        client.table("app_users").select("password_hash")
+                        .eq("id", user["id"]).single().execute().data
+                    )
+                    if not account or not bcrypt.checkpw(
+                        current_password.encode("utf-8"),
+                        account["password_hash"].encode("utf-8"),
+                    ):
+                        st.error("The current password is incorrect.")
+                    else:
+                        client.table("app_users").update({
+                            "password_hash": hash_password(new_password),
+                            "must_change_password": False,
+                            "password_changed_at": datetime.now().isoformat(),
+                        }).eq("id", user["id"]).execute()
+                        st.success("Password changed successfully.")
+
+
 def xp_badge_page() -> None:
     heading(
         "Recognition request",
@@ -1204,32 +1273,34 @@ def xp_badge_page() -> None:
             )
             title = st.text_input("Request title")
             description = st.text_area("Describe the activity and what you learned")
-            proof = st.file_uploader("Proof image", type=["jpg", "jpeg", "png", "webp"])
+            proof = st.file_uploader("Proof image (optional)", type=["jpg", "jpeg", "png", "webp"])
             if st.form_submit_button("Send for approval", type="primary"):
-                if not title.strip() or not description.strip() or not proof:
-                    st.error("Complete the title, description and proof image.")
+                if not title.strip() or not description.strip():
+                    st.error("Complete the title and description.")
                 elif is_demo():
                     st.success("Demo request submitted for Admin approval.")
                 else:
                     client = db()
-                    path = f"{user['id']}/{datetime.now().timestamp()}-{proof.name}"
-                    ok, result = upload_file("xp-proofs", path, proof.getvalue(), proof.type)
-                    if not ok:
-                        st.error(result)
-                    else:
-                        try:
-                            client.table("xp_claims").insert({
-                                "student_user_id": user["id"],
-                                "NO MATRIK": user["no_matrik"],
-                                "claim_type": claim_type,
-                                "title": title.strip(),
-                                "description": description.strip(),
-                                "proof_path": path,
-                                "status": "pending",
-                            }).execute()
-                            st.success("Request submitted. An Admin will review it.")
-                        except Exception as exc:
-                            st.error(f"Request could not be submitted: {exc}")
+                    path = None
+                    if proof:
+                        path = f"{user['id']}/{datetime.now().timestamp()}-{proof.name}"
+                        ok, result = upload_file("xp-proofs", path, proof.getvalue(), proof.type)
+                        if not ok:
+                            st.error(result)
+                            st.stop()
+                    try:
+                        client.table("xp_claims").insert({
+                            "student_user_id": user["id"],
+                            "NO MATRIK": user["no_matrik"],
+                            "claim_type": claim_type,
+                            "title": title.strip(),
+                            "description": description.strip(),
+                            "proof_path": path,
+                            "status": "pending",
+                        }).execute()
+                        st.success("Request submitted. An Admin will review it.")
+                    except Exception as exc:
+                        st.error(f"Request could not be submitted: {exc}")
     with list_tab:
         if claims.empty:
             st.info("No XP requests submitted yet.")
@@ -1777,7 +1848,7 @@ def quiz_page() -> None:
                         st.error(f"Quiz result could not be saved: {exc}")
 
 
-def award_xp_page() -> None:
+def _legacy_award_xp_page() -> None:
     heading(
         "Recognition",
         "Award experience points",
@@ -1942,6 +2013,159 @@ def award_xp_page() -> None:
     )
     if not (students_live and rules_live):
         st.caption("Showing the XP award workflow with demo data.")
+
+
+def award_xp_page() -> None:
+    heading("", "Award XP")
+    students, students_live = merged_students()
+    rules_fallback = pd.DataFrame([
+        {"code": "consultation", "name": "Consultation", "default_points": 20},
+        {"code": "class_participation", "name": "Class participation", "default_points": 10},
+        {"code": "commitment", "name": "Commitment", "default_points": 10},
+    ])
+    rules, rules_live = fetch_table("xp_rules", rules_fallback)
+    if "award_mode" in rules.columns:
+        rules = rules[rules["award_mode"] == "manual"]
+    if "code" in rules.columns:
+        rules = rules[rules["code"].isin(["consultation", "class_participation", "commitment"])]
+    if "active" in rules.columns:
+        rules = rules[rules["active"] == True]  # noqa: E712
+
+    sop_tab, manual_tab, approval_tab = st.tabs(
+        ["XP SOP", "MANUAL AWARD", "APPROVE REQUEST"]
+    )
+    with sop_tab:
+        st.markdown(
+            "- **Manual award:** consultation, class participation and commitment.\n"
+            "- **Positive XP:** recognises an eligible activity.\n"
+            "- **Negative XP:** records a justified correction or deduction; explain the reason clearly.\n"
+            "- **Student request:** consultation, class participation, commitment or study group.\n"
+            "- **Automatic XP:** awarded by the daily in-app quiz."
+        )
+
+    matric_col = next((c for c in ["NO MATRIK", "student_id"] if c in students.columns), None)
+    name_col = next(
+        (c for c in ["NICKNAME PELAJAR", "NAMA PELAJAR", "name", "student_name"] if c in students.columns),
+        None,
+    )
+    choices = (
+        students[[matric_col] + ([name_col] if name_col else [])].drop_duplicates()
+        if matric_col and not students.empty else pd.DataFrame()
+    )
+    labels = {
+        str(row[matric_col]): (
+            f"{row[name_col]} · {row[matric_col]}" if name_col else str(row[matric_col])
+        )
+        for _, row in choices.iterrows()
+    }
+    rule_lookup = {
+        str(row["code"]): row for _, row in rules.iterrows()
+    } if not rules.empty else {}
+
+    with manual_tab:
+        if not labels or not rule_lookup:
+            st.info("Student profiles and active manual XP rules are required.")
+        else:
+            with st.form("manual_xp_award_tabs", clear_on_submit=True):
+                matric = st.selectbox("Student", list(labels), format_func=lambda value: labels[value])
+                rule_code = st.selectbox(
+                    "Award category", list(rule_lookup),
+                    format_func=lambda value: str(rule_lookup[value].get("name", value)),
+                )
+                default_points = int(rule_lookup[rule_code].get("default_points", 10))
+                points = st.number_input(
+                    "XP points", min_value=-1000, max_value=1000,
+                    value=default_points, step=1,
+                )
+                reason = st.text_area("Reason")
+                confirmed = st.checkbox("I confirm this XP entry is accurate.")
+                if st.form_submit_button("Record XP", type="primary", disabled=not confirmed):
+                    if int(points) == 0:
+                        st.error("XP points cannot be zero.")
+                    elif not reason.strip():
+                        st.error("Add a reason for this XP entry.")
+                    elif is_demo():
+                        st.success(f"Demo XP entry recorded: {int(points):+d} XP.")
+                    else:
+                        try:
+                            db().table("xp_events").insert({
+                                "NO MATRIK": matric,
+                                "rule_code": rule_code,
+                                "points": int(points),
+                                "source_id": f"manual-{datetime.now().timestamp()}",
+                                "reason": reason.strip(),
+                                "award_mode": "manual",
+                                "awarded_by": st.session_state.user["id"],
+                            }).execute()
+                            st.success(f"{int(points):+d} XP recorded for {labels[matric]}.")
+                        except Exception as exc:
+                            st.error(f"XP could not be recorded: {exc}")
+
+    with approval_tab:
+        claims_fallback = pd.DataFrame([{
+            "id": 1, "NO MATRIK": "S24001", "claim_type": "study_group",
+            "title": "Algebra study group", "description": "Discussed equations.",
+            "proof_path": None, "status": "pending", "created_at": "2026-07-29",
+        }])
+        claims, claims_live = fetch_table("xp_claims", claims_fallback)
+        if "status" in claims.columns:
+            claims = claims[claims["status"] == "pending"]
+        if claims.empty:
+            st.info("No pending XP requests.")
+        else:
+            client = db()
+            for _, claim in claims.iterrows():
+                label = str(claim.get("claim_type", "study_group")).replace("_", " ").title()
+                with st.expander(f"{label} · {claim.get('title', 'XP request')} · {claim.get('NO MATRIK', '')}"):
+                    st.write(claim.get("description", ""))
+                    proof_path = claim.get("proof_path")
+                    if claims_live and proof_path:
+                        try:
+                            signed = client.storage.from_("xp-proofs").create_signed_url(str(proof_path), 600)
+                            url = signed.get("signedURL") or signed.get("signedUrl")
+                            if url:
+                                st.image(url, caption="Submitted proof", width=420)
+                        except Exception:
+                            st.warning("The optional proof image could not be displayed.")
+                    note = st.text_input("Admin note", key=f"tab_claim_note_{claim['id']}")
+                    approve, reject = st.columns(2)
+                    if approve.button("Approve", type="primary", key=f"tab_approve_{claim['id']}"):
+                        if not claims_live:
+                            st.success("Demo request approved.")
+                        else:
+                            try:
+                                rule_code = str(claim.get("claim_type", "study_group"))
+                                rule = client.table("xp_rules").select("default_points").eq("code", rule_code).limit(1).execute().data
+                                points = int(rule[0]["default_points"]) if rule else 20
+                                event = client.table("xp_events").insert({
+                                    "NO MATRIK": claim["NO MATRIK"], "rule_code": rule_code,
+                                    "points": points, "source_id": f"claim-{claim['id']}",
+                                    "reason": claim["title"], "award_mode": "manual",
+                                    "awarded_by": st.session_state.user["id"],
+                                }).execute().data[0]
+                                client.table("xp_claims").update({
+                                    "status": "approved", "admin_note": note,
+                                    "reviewed_by": st.session_state.user["id"],
+                                    "reviewed_at": datetime.now().isoformat(),
+                                    "xp_event_id": event["id"],
+                                }).eq("id", claim["id"]).execute()
+                                st.success(f"Request approved and {points} XP awarded.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Request approval failed: {exc}")
+                    if reject.button("Reject", key=f"tab_reject_{claim['id']}"):
+                        if not claims_live:
+                            st.info("Demo request rejected.")
+                        else:
+                            client.table("xp_claims").update({
+                                "status": "rejected", "admin_note": note,
+                                "reviewed_by": st.session_state.user["id"],
+                                "reviewed_at": datetime.now().isoformat(),
+                            }).eq("id", claim["id"]).execute()
+                            st.info("Request rejected.")
+                            st.rerun()
+    if not (students_live and rules_live):
+        st.caption("Showing the XP workflow with demo data.")
 
 
 def students_page(admin: bool = False) -> None:
@@ -2123,7 +2347,7 @@ def analysis_xp_page() -> None:
         return
     individuals["Badge"] = pd.cut(
         individuals["Overall XP"],
-        bins=[-1, 99, 299, 599, 999, float("inf")],
+        bins=[float("-inf"), 99, 299, 599, 999, float("inf")],
         labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
     ).astype(str)
     a, b, c = st.columns(3)
@@ -2520,7 +2744,7 @@ def user_access_page() -> None:
 
 
 def change_password_page() -> None:
-    st.title("Set a new password")
+    st.title("SET A NEW PASSWORD")
     st.write("Your administrator issued a temporary password. Replace it before continuing.")
     with st.form("change_password"):
         password = st.text_input("New password", type="password")
