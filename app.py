@@ -40,7 +40,7 @@ class GeneratedQuestion(BaseModel):
 
 class GeneratedQuiz(BaseModel):
     title: str
-    questions: list[GeneratedQuestion] = Field(min_length=3, max_length=15)
+    questions: list[GeneratedQuestion] = Field(min_length=1, max_length=20)
 
 
 LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.jpg"
@@ -543,28 +543,45 @@ def generate_material_quiz(material: pd.Series, question_count: int) -> tuple[bo
         if len(source_text) < 200:
             return False, "The selected material does not contain enough readable text."
         source_text = source_text[:60_000]
-        response = OpenAI(api_key=api_key).responses.parse(
-            model="gpt-5.6-luna",
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Create a fair educational multiple-choice quiz using only the supplied "
-                        "study material. Use four plausible options per question, one correct answer, "
-                        "clear explanations, and no trick questions."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Create exactly {question_count} questions from this material:\n\n{source_text}",
-                },
-            ],
-            text_format=GeneratedQuiz,
-        )
-        generated = response.output_parsed
+        generated_questions: list[GeneratedQuestion] = []
+        generated_title = f"{material['title']} quiz"
+        openai_client = OpenAI(api_key=api_key)
+        remaining = question_count
+        batch_number = 1
+        while remaining:
+            batch_size = min(20, remaining)
+            response = openai_client.responses.parse(
+                model="gpt-5.6-luna",
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Create a fair educational multiple-choice quiz using only the supplied "
+                            "study material. Use four plausible options per question, one correct answer, "
+                            "clear explanations, and no trick questions. Avoid repeating questions."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Create exactly {batch_size} questions for batch {batch_number}. "
+                            f"Do not repeat these existing questions: "
+                            f"{[item.question for item in generated_questions]}\n\n"
+                            f"Study material:\n{source_text}"
+                        ),
+                    },
+                ],
+                text_format=GeneratedQuiz,
+            )
+            generated = response.output_parsed
+            if batch_number == 1 and generated.title:
+                generated_title = generated.title
+            generated_questions.extend(generated.questions)
+            remaining -= batch_size
+            batch_number += 1
         quiz_row = client.table("quizzes").insert({
             "material_id": int(material["id"]),
-            "title": generated.title,
+            "title": generated_title,
             "instructions": "Choose the best answer for each question.",
             "xp_reward": 25,
             "passing_score": 60,
@@ -581,7 +598,7 @@ def generate_material_quiz(material: pd.Series, question_count: int) -> tuple[bo
                 "correct_index": item.correct_index,
                 "explanation": item.explanation,
             }
-            for index, item in enumerate(generated.questions, start=1)
+            for index, item in enumerate(generated_questions, start=1)
         ]
         client.table("quiz_questions").insert(questions).execute()
         return True, f"Draft quiz created with {len(questions)} questions."
@@ -671,8 +688,16 @@ def sidebar(role: str, name: str) -> str:
         menus = {
             "Student": ["Progress", "Materials", "Quiz", "Profile", "XP & Badge"],
             "Admin": [
-                "Dashboard", "Award XP", "Student records", "Materials", "Analytics",
-                "User access", "Data import", "System",
+                "Student record",
+                "Analysis background",
+                "Analysis progress",
+                "Analysis XP",
+                "Analysis material",
+                "CRUD",
+                "Award XP",
+                "User access",
+                "Material",
+                "Quiz",
             ],
         }
         labels = {
@@ -991,7 +1016,7 @@ def xp_badge_page() -> None:
         st.dataframe(events[visible].sort_values("created_at", ascending=False), hide_index=True, width="stretch")
 
 
-def materials_page(lecturer: bool = False) -> None:
+def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
     heading(
         "Knowledge library",
         "Study materials",
@@ -1085,10 +1110,6 @@ def materials_page(lecturer: bool = False) -> None:
     if type_filter != "All types" and "material_type" in materials.columns:
         materials = materials[materials["material_type"] == type_filter]
 
-    question_count = 5
-    if lecturer:
-        question_count = st.number_input("Questions per generated quiz", 3, 15, 5)
-
     if materials.empty:
         st.info(
             "No materials have been uploaded yet."
@@ -1121,12 +1142,12 @@ def materials_page(lecturer: bool = False) -> None:
                         disabled=True,
                         width="stretch",
                     )
-            if lecturer and live and item.get("file_path") and c4.button("Generate quiz", key=f"quiz_material_{i}"):
+            if quiz_tools and live and item.get("file_path") and c4.button("Generate quiz", key=f"quiz_material_{i}"):
                 with st.spinner("Generating a draft quiz from this material…"):
-                    ok, message = generate_material_quiz(item, int(question_count))
+                    ok, message = generate_material_quiz(item, 10)
                 (st.success if ok else st.error)(message)
 
-    if lecturer:
+    if quiz_tools:
         st.subheader("Quiz management")
         quizzes, quiz_live = fetch_table("quizzes", pd.DataFrame())
         if quizzes.empty:
@@ -1141,6 +1162,69 @@ def materials_page(lecturer: bool = False) -> None:
                         db().table("quizzes").update({"status": "published"}).eq("id", quiz["id"]).execute()
                         st.success("Quiz published to students.")
                         st.rerun()
+
+
+def admin_quiz_page() -> None:
+    heading(
+        "Assessment builder",
+        "AI quiz generation",
+        "Generate up to 100 multiple-choice questions from an uploaded material.",
+    )
+    materials, live = fetch_table("materials", EMPTY_MATERIALS)
+    if materials.empty:
+        st.info("Upload at least one material before generating a quiz.")
+    else:
+        labels = {
+            int(row["id"]): (
+                f"Chapter {row.get('chapter', '—')} · "
+                f"{row.get('material_type', 'Other')} · {row['title']}"
+            )
+            for _, row in materials.iterrows()
+        }
+        with st.form("admin_generate_quiz"):
+            material_id = st.selectbox(
+                "Source material",
+                list(labels),
+                format_func=lambda value: labels[value],
+            )
+            question_count = st.number_input(
+                "Number of questions",
+                min_value=1,
+                max_value=100,
+                value=20,
+                step=5,
+            )
+            generate = st.form_submit_button("Generate draft quiz", type="primary")
+            if generate:
+                selected = materials[materials["id"] == material_id].iloc[0]
+                with st.spinner(
+                    f"Generating {int(question_count)} questions in batches…"
+                ):
+                    ok, message = generate_material_quiz(
+                        selected, int(question_count)
+                    )
+                (st.success if ok else st.error)(message)
+
+    st.subheader("Quiz library")
+    quizzes, _ = fetch_table("quizzes", pd.DataFrame())
+    if quizzes.empty:
+        st.info("No quizzes created yet.")
+        return
+    for _, quiz in quizzes.iterrows():
+        with st.container(border=True):
+            left, middle, right = st.columns([5, 2, 1.5])
+            left.markdown(f"**{quiz['title']}**")
+            middle.caption(
+                f"{str(quiz['status']).title()} · {quiz.get('xp_reward', 0)} XP"
+            )
+            if quiz["status"] == "draft" and right.button(
+                "Publish", key=f"admin_publish_quiz_{quiz['id']}"
+            ):
+                db().table("quizzes").update({"status": "published"}).eq(
+                    "id", quiz["id"]
+                ).execute()
+                st.success("Quiz published to students.")
+                st.rerun()
 
 
 def quiz_page() -> None:
@@ -1403,6 +1487,275 @@ def students_page(admin: bool = False) -> None:
     if not live: st.caption("Sample data is shown because the live tables are unavailable.")
 
 
+def admin_student_records_page() -> None:
+    heading(
+        "Student information",
+        "Student record",
+        "Combined background, progress and XP records with field-level filters.",
+    )
+    merged, live = merged_students()
+    if merged.empty:
+        st.info("No student records are available.")
+        return
+    search = st.text_input("Search records", placeholder="Name, No Matrik or any value…")
+    categorical = [
+        column
+        for column in merged.columns
+        if merged[column].nunique(dropna=True) <= 30
+        and column not in {"id", "created_at", "updated_at"}
+    ]
+    slicer_fields = st.multiselect(
+        "Dropdown slicers",
+        categorical,
+        max_selections=4,
+        placeholder="Select fields such as class, programme, system or zone",
+    )
+    filtered = merged.copy()
+    slicer_columns = st.columns(max(1, min(4, len(slicer_fields))))
+    for index, field in enumerate(slicer_fields):
+        values = sorted(filtered[field].dropna().astype(str).unique().tolist())
+        selected = slicer_columns[index % len(slicer_columns)].selectbox(
+            field, ["All", *values], key=f"record_slicer_{field}"
+        )
+        if selected != "All":
+            filtered = filtered[filtered[field].astype(str) == selected]
+    if search:
+        filtered = filtered[
+            filtered.astype(str).apply(
+                lambda row: row.str.contains(search, case=False, na=False).any(),
+                axis=1,
+            )
+        ]
+    a, b = st.columns(2)
+    with a:
+        metric("Students shown", f"{len(filtered):,}", f"of {len(merged):,} records")
+    with b:
+        metric("Available fields", f"{len(merged.columns):,}", "Background, progress and XP")
+    st.dataframe(filtered, hide_index=True, width="stretch")
+    if not live:
+        st.caption("Sample data is shown because live tables are unavailable.")
+
+
+def analysis_background_page() -> None:
+    heading(
+        "Student intelligence",
+        "Analysis background",
+        "Understand the composition of the student cohort.",
+    )
+    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+    if background.empty:
+        st.info("No student background data is available.")
+        return
+    fields = [
+        column
+        for column in background.columns
+        if background[column].nunique(dropna=True) <= 40
+        and column not in {"id", "NO MATRIK", "created_at", "updated_at"}
+    ]
+    if not fields:
+        st.dataframe(background, hide_index=True, width="stretch")
+        return
+    field = st.selectbox("Analyse field", fields)
+    summary = (
+        background[field]
+        .fillna("Not specified")
+        .astype(str)
+        .value_counts()
+        .rename_axis(field)
+        .reset_index(name="Students")
+    )
+    a, b = st.columns(2)
+    with a: metric("Total students", f"{len(background):,}", "Background records")
+    with b: metric("Groups", f"{len(summary):,}", f"Distinct {field} values")
+    st.dataframe(summary, hide_index=True, width="stretch")
+
+
+def analysis_progress_page() -> None:
+    heading(
+        "Academic intelligence",
+        "Analysis progress",
+        "Review assessment marks and performance zones.",
+    )
+    progress, _ = fetch_table("stud_progress", DEMO_PROGRESS)
+    assessments = [
+        column
+        for column in [
+            "C1C2", "C5", "C8", "C9C10", "INDIVIDUAL ASSIGNMENT",
+            "GROUP ASSIGNMENT", "UPS 1", "UPS 2", "UPS 3",
+        ]
+        if column in progress.columns
+    ]
+    if progress.empty or not assessments:
+        st.info("No assessment results are available.")
+        return
+    assessment = st.selectbox("Assessment", assessments)
+    marks = pd.to_numeric(progress[assessment], errors="coerce")
+    available = marks.dropna()
+    a, b, c = st.columns(3)
+    with a: metric("Results available", str(len(available)), f"of {len(progress)} students")
+    with b: metric("Average mark", f"{available.mean():.1f}" if not available.empty else "—", assessment)
+    with c: metric("Highest mark", f"{available.max():.1f}" if not available.empty else "—", assessment)
+    zone_column = f"{assessment}_ZONE"
+    columns = [c for c in ["NO MATRIK", assessment, zone_column] if c in progress.columns]
+    st.dataframe(
+        progress[columns].sort_values(assessment, ascending=False, na_position="last"),
+        hide_index=True,
+        width="stretch",
+    )
+    if zone_column in progress.columns:
+        st.subheader("Zone distribution")
+        zones = (
+            progress[zone_column].fillna("Not assigned").astype(str)
+            .value_counts().rename_axis("Zone").reset_index(name="Students")
+        )
+        st.dataframe(zones, hide_index=True, width="stretch")
+
+
+def analysis_xp_page() -> None:
+    heading(
+        "Recognition intelligence",
+        "Analysis XP",
+        "Review XP balances, badges and student rank.",
+    )
+    merged, _ = merged_students()
+    if merged.empty or "xp" not in merged.columns:
+        st.info("No XP records are available.")
+        return
+    board = merged.copy()
+    board["xp"] = pd.to_numeric(board["xp"], errors="coerce").fillna(0)
+    board = board.sort_values("xp", ascending=False).reset_index(drop=True)
+    board["Rank"] = board.index + 1
+    board["Badge"] = pd.cut(
+        board["xp"],
+        bins=[-1, 99, 299, 599, 999, float("inf")],
+        labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
+    ).astype(str)
+    a, b, c = st.columns(3)
+    with a: metric("Total XP", f"{int(board['xp'].sum()):,}", "Across all students")
+    with b: metric("Average XP", f"{board['xp'].mean():.1f}", "Per student")
+    with c: metric("Ranked students", str(len(board)), "Current leaderboard")
+    keep = [
+        column for column in
+        ["Rank", "NAMA PELAJAR", "name", "NO MATRIK", "student_id", "xp", "Badge"]
+        if column in board.columns
+    ]
+    st.dataframe(board[keep], hide_index=True, width="stretch")
+
+
+def analysis_material_page() -> None:
+    heading(
+        "Library intelligence",
+        "Analysis material",
+        "Analyse uploaded materials by chapter and resource type.",
+    )
+    materials, _ = fetch_table("materials", EMPTY_MATERIALS)
+    if materials.empty:
+        st.info("No materials have been uploaded yet.")
+        return
+    a, b, c = st.columns(3)
+    with a: metric("Materials", str(len(materials)), "Uploaded resources")
+    with b: metric("Chapters", str(materials.get("chapter", pd.Series()).nunique()), "With resources")
+    with c: metric("Types", str(materials.get("material_type", pd.Series()).nunique()), "Resource classifications")
+    if {"chapter", "material_type"}.issubset(materials.columns):
+        summary = (
+            materials.groupby(["chapter", "material_type"], dropna=False)
+            .size().reset_index(name="Materials")
+            .sort_values(["chapter", "material_type"])
+        )
+        st.dataframe(summary, hide_index=True, width="stretch")
+    st.subheader("Material register")
+    visible = [
+        column for column in
+        ["title", "course", "chapter", "material_type", "type", "uploaded_at"]
+        if column in materials.columns
+    ]
+    st.dataframe(materials[visible], hide_index=True, width="stretch")
+
+
+def admin_crud_page() -> None:
+    heading(
+        "Data management",
+        "CRUD",
+        "Add, update, delete or overwrite student datasets.",
+    )
+    target = st.selectbox(
+        "Dataset",
+        ["stud_background", "stud_progress", "stud_xp"],
+    )
+    data, live = fetch_table(target, pd.DataFrame())
+    add_tab, update_tab, delete_tab, bulk_tab = st.tabs(
+        ["Add", "Update", "Delete", "Bulk overwrite"]
+    )
+    with add_tab:
+        st.caption("Add one record using the dataset columns below.")
+        template_columns = [
+            column for column in data.columns
+            if column not in {"id", "created_at", "updated_at"}
+        ]
+        if not template_columns:
+            st.info("Run the related Supabase schema before adding records.")
+        else:
+            with st.form(f"crud_add_{target}"):
+                values = {
+                    column: st.text_input(column)
+                    for column in template_columns
+                }
+                if st.form_submit_button("Add record", type="primary"):
+                    record = {key: value for key, value in values.items() if value != ""}
+                    try:
+                        db().table(target).insert(record).execute()
+                        st.success("Record added.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Record could not be added: {exc}")
+    with update_tab:
+        if data.empty:
+            st.info("No records are available to update.")
+        else:
+            edited = st.data_editor(data, hide_index=True, width="stretch")
+            if st.button("Save updates", type="primary"):
+                ok, message = upsert_rows(target, edited)
+                (st.success if ok else st.error)(message)
+    with delete_tab:
+        if data.empty:
+            st.info("No records are available to delete.")
+        else:
+            key = "NO MATRIK" if "NO MATRIK" in data.columns else "id"
+            choices = data[key].dropna().astype(str).tolist()
+            selected = st.selectbox("Record to delete", choices)
+            confirmed = st.checkbox("I understand this permanently deletes the selected record.")
+            if st.button("Delete record", disabled=not confirmed):
+                try:
+                    db().table(target).delete().eq(key, selected).execute()
+                    st.success("Record deleted.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Record could not be deleted: {exc}")
+    with bulk_tab:
+        st.warning("Bulk overwrite replaces every record in the selected dataset.")
+        uploaded = st.file_uploader(
+            "CSV or Excel file", type=["csv", "xlsx", "xls"], key="crud_bulk_file"
+        )
+        if uploaded:
+            frame = (
+                pd.read_csv(uploaded)
+                if uploaded.name.lower().endswith(".csv")
+                else pd.read_excel(uploaded)
+            )
+            st.dataframe(frame.head(50), hide_index=True, width="stretch")
+            confirmation = st.text_input("Type OVERWRITE to continue")
+            if st.button("Overwrite dataset", disabled=confirmation != "OVERWRITE"):
+                try:
+                    key = "NO MATRIK"
+                    db().table(target).delete().neq(key, "__never__").execute()
+                    ok, message = upsert_rows(target, frame)
+                    (st.success if ok else st.error)(message)
+                except Exception as exc:
+                    st.error(f"Overwrite stopped: {exc}")
+    if not live:
+        st.caption("The live dataset is unavailable or empty.")
+
+
 def analytics_page() -> None:
     heading("Learning intelligence", "Performance analytics", "Turn class activity into clear, practical teaching decisions.")
     merged, _ = merged_students()
@@ -1461,12 +1814,15 @@ def user_access_page() -> None:
         .execute()
         .data
     )
-    create_tab, manage_tab = st.tabs(["Add user", "Manage users"])
+    create_tab, manage_tab, bulk_tab = st.tabs(
+        ["Add user", "Manage users", "Bulk import"]
+    )
     with create_tab:
         role = st.segmented_control("Access level", ["Admin", "Student"], default="Student")
         students, _ = fetch_table("stud_background", DEMO_STUDENTS)
         matric = None
         suggested_name = ""
+        can_create = True
         if role == "Student":
             matric_col = "NO MATRIK" if "NO MATRIK" in students.columns else "student_id"
             name_col = "NAMA PELAJAR" if "NAMA PELAJAR" in students.columns else "name"
@@ -1475,15 +1831,18 @@ def user_access_page() -> None:
             options = available[matric_col].astype(str).tolist()
             if not options:
                 st.info("Every student record is already linked to an account.")
-                return
-            name_map = dict(zip(available[matric_col].astype(str), available[name_col].astype(str)))
-            matric = st.selectbox("Student record", options, format_func=lambda value: f"{name_map[value]} · {value}")
-            suggested_name = name_map[matric]
+                can_create = False
+            else:
+                name_map = dict(zip(available[matric_col].astype(str), available[name_col].astype(str)))
+                matric = st.selectbox("Student record", options, format_func=lambda value: f"{name_map[value]} · {value}")
+                suggested_name = name_map[matric]
         with st.form("create_app_user", clear_on_submit=True):
             full_name = st.text_input("Full name", value=suggested_name)
             email = st.text_input("Email address")
             temp_password = st.text_input("Temporary password", type="password")
-            if st.form_submit_button("Create user", type="primary"):
+            if st.form_submit_button(
+                "Create user", type="primary", disabled=not can_create
+            ):
                 if not full_name.strip() or "@" not in email:
                     st.error("Enter a valid name and email.")
                 elif not valid_password(temp_password):
@@ -1536,6 +1895,71 @@ def user_access_page() -> None:
                     "must_change_password": True,
                 }).eq("id", selected).execute()
                 st.success("Temporary password set. The user must change it at next login.")
+        st.divider()
+        remove_confirmed = st.checkbox(
+            "Permanently remove this account",
+            key="remove_user_confirmed",
+        )
+        if st.button("Remove user", disabled=not remove_confirmed):
+            if selected == str(st.session_state.user["id"]):
+                st.error("You cannot remove your own active account.")
+            else:
+                client.table("app_users").delete().eq("id", selected).execute()
+                st.success("User account removed.")
+                st.rerun()
+    with bulk_tab:
+        st.write(
+            "Upload CSV or Excel with: email, full_name, role, NO MATRIK and "
+            "temporary_password. Role must be admin or student."
+        )
+        upload = st.file_uploader(
+            "User access file",
+            type=["csv", "xlsx", "xls"],
+            key="user_access_bulk_file",
+        )
+        if upload:
+            frame = (
+                pd.read_csv(upload)
+                if upload.name.lower().endswith(".csv")
+                else pd.read_excel(upload)
+            )
+            st.dataframe(frame.head(50), hide_index=True, width="stretch")
+            required = {"email", "full_name", "role", "temporary_password"}
+            missing = required - set(frame.columns)
+            if missing:
+                st.error(f"Missing columns: {', '.join(sorted(missing))}")
+            elif st.button("Import user access", type="primary"):
+                try:
+                    records = []
+                    for _, row in frame.iterrows():
+                        role_value = str(row["role"]).strip().lower()
+                        if role_value not in {"admin", "student"}:
+                            raise ValueError(f"Invalid role: {row['role']}")
+                        password = str(row["temporary_password"])
+                        if not valid_password(password):
+                            raise ValueError(
+                                f"Temporary password for {row['email']} is not strong enough."
+                            )
+                        matric = row.get("NO MATRIK")
+                        records.append({
+                            "email": str(row["email"]).strip().lower(),
+                            "full_name": str(row["full_name"]).strip(),
+                            "role": role_value,
+                            "NO MATRIK": (
+                                str(matric).strip()
+                                if role_value == "student" and pd.notna(matric)
+                                else None
+                            ),
+                            "password_hash": hash_password(password),
+                            "active": True,
+                            "must_change_password": True,
+                        })
+                    client.table("app_users").upsert(
+                        records, on_conflict="email"
+                    ).execute()
+                    st.success(f"{len(records)} user accounts imported.")
+                except Exception as exc:
+                    st.error(f"User import failed: {exc}")
 
 
 def change_password_page() -> None:
@@ -1626,16 +2050,16 @@ def main() -> None:
         }[page]()
     else:
         {
-            "Dashboard": admin_dashboard,
+            "Student record": admin_student_records_page,
+            "Analysis background": analysis_background_page,
+            "Analysis progress": analysis_progress_page,
+            "Analysis XP": analysis_xp_page,
+            "Analysis material": analysis_material_page,
+            "CRUD": admin_crud_page,
             "Award XP": award_xp_page,
-            "Student records": lambda: students_page(True),
-            "Materials": lambda: materials_page(True),
-            "Analytics": analytics_page,
             "User access": user_access_page,
-            "Data import": import_page,
-            "System": lambda: simple_page(
-                "System settings", "Configure programmes, XP rules, grading and integrations."
-            ),
+            "Material": lambda: materials_page(True),
+            "Quiz": admin_quiz_page,
         }[page]()
 
 
