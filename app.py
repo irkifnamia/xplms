@@ -71,9 +71,10 @@ st.markdown(
     [data-testid="stHeader"] {
         display: block !important;
         visibility: visible !important;
-        height: 0 !important;
-        min-height: 0 !important;
+        height: 3.5rem !important;
+        min-height: 3.5rem !important;
         background: transparent !important;
+        pointer-events: none !important;
     }
 
     [data-testid="stExpandSidebarButton"],
@@ -84,6 +85,7 @@ st.markdown(
         top: 0.75rem !important;
         left: 0.75rem !important;
         z-index: 1000000 !important;
+        pointer-events: auto !important;
     }
 
     [data-testid="stExpandSidebarButton"],
@@ -99,7 +101,7 @@ st.markdown(
     }
 
     [data-testid="stAppViewContainer"] .block-container {
-        padding-top: 4rem !important;
+        padding-top: 1.5rem !important;
     }
     </style>
     """,
@@ -234,6 +236,9 @@ button:disabled, button:disabled p, button:disabled span {
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] *,
 [data-testid="stSidebar"] small { color:#5b5b57 !important; opacity:1 !important; }
 [data-testid="stImage"] {
+  width:100% !important;
+  display:flex !important;
+  justify-content:center !important;
   margin-left:auto !important;
   margin-right:auto !important;
   text-align:center !important;
@@ -242,6 +247,17 @@ button:disabled, button:disabled p, button:disabled span {
   display:block !important;
   margin-left:auto !important;
   margin-right:auto !important;
+}
+
+/* A collapsed preference must never make desktop navigation disappear. */
+@media(min-width:701px){
+  section[data-testid="stSidebar"] {
+    display:block !important;
+    visibility:visible !important;
+    min-width:280px !important;
+    width:280px !important;
+    transform:translateX(0) !important;
+  }
 }
 
 /* Native buttons, form buttons and segmented button groups. */
@@ -301,8 +317,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
   [data-testid="stHeader"] {
     display:block !important;
     visibility:visible !important;
-    height:0 !important;
-    min-height:0 !important;
+    height:3.5rem !important;
+    min-height:3.5rem !important;
     background:transparent !important;
   }
   [data-testid="stHeader"] [data-testid="stToolbar"],
