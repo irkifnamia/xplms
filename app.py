@@ -476,17 +476,27 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     background:#a91f1f !important;
     border-color:#a91f1f !important;
   }
-  [class*="st-key-mobile_page_"] [data-baseweb="select"] > div {
-    background:#17834d !important;
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-baseweb="select"],
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-baseweb="select"] > div,
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-baseweb="select"] > div > div {
+    background-color:#17834d !important;
     border-color:#17834d !important;
     color:#fff !important;
+    box-shadow:none !important;
   }
-  [class*="st-key-mobile_page_"] [data-baseweb="select"] span,
-  [class*="st-key-mobile_page_"] [data-baseweb="select"] div {
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-baseweb="select"] span,
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-baseweb="select"] input {
     color:#fff !important;
     -webkit-text-fill-color:#fff !important;
+    background:transparent !important;
   }
-  [class*="st-key-mobile_page_"] [data-baseweb="select"] svg {
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker)
+  [data-baseweb="select"] svg {
     fill:#fff !important;
   }
   .hero { padding:20px; border-radius:17px; }
@@ -883,16 +893,19 @@ def mobile_navigation(role: str, current_page: str) -> str:
         st.session_state[mobile_key] = st.session_state[active_key]
     with st.container():
         st.markdown('<span class="mobile-nav-marker"></span>', unsafe_allow_html=True)
-        signout_column, page_column = st.columns([1, 2.2])
-        with signout_column:
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="left",
+            vertical_alignment="center",
+            gap="small",
+        ):
             if st.button(
                 "SIGN OUT",
                 key=f"mobile_sign_out_{role.lower()}",
-                use_container_width=True,
+                width="content",
             ):
                 st.session_state.clear()
                 st.rerun()
-        with page_column:
             st.selectbox(
                 "PAGE",
                 menus[role],
@@ -901,6 +914,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
                 on_change=sync_navigation,
                 args=(mobile_key, active_key),
                 label_visibility="collapsed",
+                width="stretch",
             )
     return st.session_state[active_key]
 
