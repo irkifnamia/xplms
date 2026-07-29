@@ -2945,6 +2945,35 @@ def admin_crud_page() -> None:
             )
         else:
             st.warning("Replace entire dataset deletes and recreates every record.")
+        fallback_columns = {
+            "stud_background": [
+                "NO MATRIK", "NAMA PELAJAR", "NICKNAME PELAJAR",
+                "SISTEM", "SPM_MATH", "SPM_ADDMATH", "DM015", "DM025",
+                "PKA", "JANTINA", "KELAS",
+            ],
+            "stud_progress": [
+                "NO MATRIK", "C1C2", "C1C2_ZONE", "C5", "C5_ZONE",
+                "C8", "C8_ZONE", "C9C10", "C9C10_ZONE",
+                "INDIVIDUAL ASSIGNMENT", "GROUP ASSIGNMENT",
+                "UPS 1", "UPS 2", "UPS 3",
+            ],
+            "stud_xp": ["NO MATRIK", "XP"],
+        }
+        technical_columns = {"id", "created_at", "updated_at"}
+        template_columns = [
+            column for column in data.columns
+            if column not in technical_columns
+        ] or fallback_columns[target]
+        template_csv = pd.DataFrame(columns=template_columns).to_csv(
+            index=False
+        ).encode("utf-8-sig")
+        st.download_button(
+            f"Download {target} CSV template",
+            data=template_csv,
+            file_name=f"{target}_bulk_template.csv",
+            mime="text/csv",
+            key=f"crud_template_{target}",
+        )
         uploaded = st.file_uploader(
             "CSV or Excel file", type=["csv", "xlsx", "xls"], key="crud_bulk_file"
         )
