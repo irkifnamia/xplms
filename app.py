@@ -689,7 +689,7 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Progress", "Materials", "Quiz", "Leaderboard", "Profile", "XP & Badge"
+                "Progress", "Materials", "Quiz", "Leaderboard", "Profile", "XP"
             ],
             "Admin": [
                 "Student record",
@@ -826,7 +826,27 @@ def merged_students() -> tuple[pd.DataFrame, bool]:
         merged = merged.merge(xp, on=xp_key, how="left")
     if "XP" in merged.columns:
         merged["xp"] = pd.to_numeric(merged["XP"], errors="coerce").fillna(0)
+        merged = merged.drop(columns=["XP"])
     return merged, live_a and live_b and live_c
+
+
+def student_nickname(user: dict[str, Any]) -> str:
+    """Return the student's preferred nickname with a safe account fallback."""
+    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+    matric = user.get("no_matrik")
+    if matric and "NO MATRIK" in background.columns:
+        matched = background[background["NO MATRIK"].astype(str) == str(matric)]
+    elif is_demo():
+        matched = background.head(1)
+    else:
+        matched = pd.DataFrame()
+    if not matched.empty:
+        row = matched.iloc[0]
+        for column in ["NICKNAME PELAJAR", "nickname", "NAMA PELAJAR", "name"]:
+            value = row.get(column)
+            if pd.notna(value) and str(value).strip():
+                return str(value).strip()
+    return str(user.get("name", "Student"))
 
 
 ASSESSMENT_COLUMNS = [
@@ -873,7 +893,13 @@ def leaderboard_data(
         None,
     )
     name_col = next(
-        (column for column in ["NAMA PELAJAR", "name", "student_name"] if column in merged.columns),
+        (
+            column
+            for column in [
+                "NICKNAME PELAJAR", "nickname", "NAMA PELAJAR", "name", "student_name"
+            ]
+            if column in merged.columns
+        ),
         None,
     )
     class_col = next(
@@ -935,6 +961,11 @@ def leaderboard_data(
     )
     progress_rank = individuals["Progress Average"].rank(method="min", ascending=False)
     individuals["Progress Rank"] = progress_rank.astype("Int64")
+    individuals["Badge"] = pd.cut(
+        individuals["Overall XP"],
+        bins=[-1, 99, 299, 599, 999, float("inf")],
+        labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
+    ).astype(str)
 
     classes = (
         individuals.groupby("Class", dropna=False)
@@ -959,6 +990,11 @@ def leaderboard_data(
     classes["Progress Rank"] = (
         classes["Progress Average"].rank(method="min", ascending=False).astype("Int64")
     )
+    classes["Class Badge"] = pd.cut(
+        classes["Overall XP Average"],
+        bins=[-1, 99, 299, 599, 999, float("inf")],
+        labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
+    ).astype(str)
     return individuals, classes, available_months, selected_month
 
 
@@ -1033,7 +1069,10 @@ def profile_page() -> None:
         st.info("No student background record is linked to this account.")
         return
 
-    name = row.get("NAMA PELAJAR", row.get("name", user.get("name", "—")))
+    name = row.get(
+        "NICKNAME PELAJAR",
+        row.get("nickname", row.get("NAMA PELAJAR", row.get("name", user.get("name", "—")))),
+    )
     matric = row.get("NO MATRIK", row.get("student_id", user.get("no_matrik", "—")))
     student_class = row.get("KELAS", row.get("cohort", "—"))
     system = row.get("SISTEM", row.get("programme", "—"))
@@ -1057,116 +1096,68 @@ def profile_page() -> None:
 
 
 def xp_badge_page() -> None:
-    heading("Recognition", "XP & Badge", "Track your experience points, badge progress and class rank.")
+    heading(
+        "Recognition request",
+        "XP",
+        "Request XP for a verified learning activity.",
+    )
     user = st.session_state.get("user", {})
-    xp_data, _ = fetch_table("stud_xp", DEMO_PROGRESS[["student_id", "xp"]].copy())
-    matric_col = "NO MATRIK" if "NO MATRIK" in xp_data.columns else "student_id"
-    xp_col = "XP" if "XP" in xp_data.columns else "xp"
-    if user.get("no_matrik") and matric_col == "NO MATRIK":
-        own = xp_data[xp_data[matric_col] == user["no_matrik"]]
-    else:
-        own = xp_data.head(1)
-    if own.empty:
-        st.info("No XP record is linked to this account.")
-        return
-    xp_value = pd.to_numeric(pd.Series([own.iloc[0].get(xp_col, 0)]), errors="coerce").fillna(0).iloc[0]
-    ranked = xp_data.copy()
-    ranked["_xp"] = pd.to_numeric(ranked[xp_col], errors="coerce").fillna(0)
-    ranked = ranked.sort_values(["_xp", matric_col], ascending=[False, True]).reset_index(drop=True)
-    ranked["Rank"] = ranked.index + 1
-    own_matric = str(own.iloc[0][matric_col])
-    rank_rows = ranked[ranked[matric_col].astype(str) == own_matric]
-    rank = int(rank_rows.iloc[0]["Rank"]) if not rank_rows.empty else 0
-    individual_board, _, _, selected_month = leaderboard_data()
-    monthly_row = individual_board[
-        individual_board["NO MATRIK"].astype(str) == own_matric
-    ] if not individual_board.empty else pd.DataFrame()
-    monthly_xp = (
-        int(monthly_row.iloc[0]["Monthly XP"]) if not monthly_row.empty else 0
+    st.write(
+        "Submit evidence for consultation, class participation, commitment or "
+        "a study group. An Admin will review the request."
     )
-
-    badge_rules = [
-        (100, "Starter", "Begin earning experience points"),
-        (300, "Active learner", "Build a consistent learning record"),
-        (600, "Achiever", "Demonstrate sustained participation"),
-        (1000, "XP Elite", "Reach an outstanding XP milestone"),
-    ]
-    earned = [badge for threshold, badge, _ in badge_rules if xp_value >= threshold]
-    next_badge = next(((threshold, badge) for threshold, badge, _ in badge_rules if xp_value < threshold), None)
-    a, b, c, d = st.columns(4)
-    with a: metric("Monthly XP", f"{monthly_xp:,}", selected_month)
-    with b: metric("Overall XP", f"{int(xp_value):,}", "Cumulative balance")
-    with c: metric("Overall rank", f"#{rank}" if rank else "—", f"of {len(ranked)} students")
-    with d: metric("Badges earned", str(len(earned)), f"of {len(badge_rules)} available")
-
-    st.subheader("Badge collection")
-    cols = st.columns(len(badge_rules))
-    for col, (threshold, badge, description) in zip(cols, badge_rules):
-        status = "Unlocked" if xp_value >= threshold else f"{max(0, threshold-int(xp_value))} XP to unlock"
-        with col:
-            st.markdown(
-                f'<div class="metric-card" style="text-align:center"><div class="metric-value">{threshold}</div>'
-                f'<b>{badge}</b><div class="metric-note">{description}<br>{status}</div></div>',
-                unsafe_allow_html=True,
-            )
-    if next_badge:
-        threshold, badge = next_badge
-        st.progress(min(float(xp_value) / threshold, 1.0), text=f"Progress to {badge}: {int(xp_value)} / {threshold} XP")
-    else:
-        st.success("All current XP badges unlocked.")
-
-    with st.expander("Request XP with proof"):
-        st.write(
-            "Request XP for consultation, class participation, commitment or "
-            "a study group. An Admin must approve the evidence."
+    with st.form("xp_proof_claim", clear_on_submit=True):
+        claim_type = st.selectbox(
+            "XP type",
+            ["consultation", "class_participation", "commitment", "study_group"],
+            format_func=lambda value: value.replace("_", " ").title(),
         )
-        with st.form("xp_proof_claim", clear_on_submit=True):
-            claim_type = st.selectbox(
-                "XP type",
-                ["consultation", "class_participation", "commitment", "study_group"],
-                format_func=lambda value: value.replace("_", " ").title(),
-            )
-            title = st.text_input("Request title")
-            description = st.text_area("Describe the activity and what you learned")
-            proof = st.file_uploader("Proof image", type=["jpg", "jpeg", "png", "webp"])
-            if st.form_submit_button("Send for approval", type="primary"):
-                if not title.strip() or not description.strip() or not proof:
-                    st.error("Complete the topic, description and proof image.")
-                elif is_demo():
-                    st.success("Demo claim submitted for Admin approval.")
+        title = st.text_input("Request title")
+        description = st.text_area("Describe the activity and what you learned")
+        proof = st.file_uploader("Proof image", type=["jpg", "jpeg", "png", "webp"])
+        if st.form_submit_button("Send for approval", type="primary"):
+            if not title.strip() or not description.strip() or not proof:
+                st.error("Complete the title, description and proof image.")
+            elif is_demo():
+                st.success("Demo request submitted for Admin approval.")
+            else:
+                client = db()
+                path = f"{user['id']}/{datetime.now().timestamp()}-{proof.name}"
+                ok, result = upload_file("xp-proofs", path, proof.getvalue(), proof.type)
+                if not ok:
+                    st.error(result)
                 else:
-                    client = db()
-                    path = f"{user['id']}/{datetime.now().timestamp()}-{proof.name}"
-                    ok, result = upload_file("xp-proofs", path, proof.getvalue(), proof.type)
-                    if not ok:
-                        st.error(result)
-                    else:
-                        try:
-                            client.table("xp_claims").insert({
-                                "student_user_id": user["id"],
-                                "NO MATRIK": user["no_matrik"],
-                                "claim_type": claim_type,
-                                "title": title.strip(),
-                                "description": description.strip(),
-                                "proof_path": path,
-                                "status": "pending",
-                            }).execute()
-                            st.success("Proof submitted. An Admin will review your claim.")
-                        except Exception as exc:
-                            st.error(f"Claim could not be submitted: {exc}")
+                    try:
+                        client.table("xp_claims").insert({
+                            "student_user_id": user["id"],
+                            "NO MATRIK": user["no_matrik"],
+                            "claim_type": claim_type,
+                            "title": title.strip(),
+                            "description": description.strip(),
+                            "proof_path": path,
+                            "status": "pending",
+                        }).execute()
+                        st.success("Request submitted. An Admin will review it.")
+                    except Exception as exc:
+                        st.error(f"Request could not be submitted: {exc}")
 
-    events_fallback = pd.DataFrame(
-        [{"rule_code": "consultation", "points": 20, "reason": "Academic consultation", "created_at": "2026-07-28"}]
-    )
-    events, live = fetch_table("xp_events", events_fallback)
-    if live and "NO MATRIK" in events.columns:
-        events = events[events["NO MATRIK"] == user.get("no_matrik")]
-    st.subheader("XP history")
-    if events.empty:
-        st.info("No XP awards recorded yet.")
+    claims, live = fetch_table("xp_claims", pd.DataFrame())
+    if live and "NO MATRIK" in claims.columns:
+        claims = claims[claims["NO MATRIK"].astype(str) == str(user.get("no_matrik"))]
+    st.subheader("My XP requests")
+    if claims.empty:
+        st.info("No XP requests submitted yet.")
     else:
-        visible = [c for c in ["created_at", "rule_code", "reason", "points"] if c in events.columns]
-        st.dataframe(events[visible].sort_values("created_at", ascending=False), hide_index=True, width="stretch")
+        visible = [
+            column for column in
+            ["created_at", "claim_type", "title", "status", "admin_note"]
+            if column in claims.columns
+        ]
+        st.dataframe(
+            claims[visible].sort_values("created_at", ascending=False),
+            hide_index=True,
+            width="stretch",
+        )
 
 
 def student_leaderboard_page() -> None:
@@ -1188,18 +1179,45 @@ def student_leaderboard_page() -> None:
     user = st.session_state.user
     own_matric = str(user.get("no_matrik", ""))
     own = individuals[individuals["NO MATRIK"].astype(str) == own_matric]
+    if own.empty and is_demo():
+        own = individuals.head(1)
     if not own.empty:
         row = own.iloc[0]
-        a, b, c = st.columns(3)
-        with a: metric("Monthly XP rank", f"#{int(row['Monthly Rank'])}", selected_month)
-        with b: metric("Overall XP rank", f"#{int(row['Overall Rank'])}", f"{int(row['Overall XP'])} XP")
-        with c:
+        badge_thresholds = [
+            (100, "Starter"),
+            (300, "Active learner"),
+            (600, "Achiever"),
+            (1000, "XP Elite"),
+        ]
+        captured = [
+            badge for threshold, badge in badge_thresholds
+            if float(row["Overall XP"]) >= threshold
+        ]
+        a, b, c, d, e = st.columns(5)
+        with a: metric("Monthly XP", f"{int(row['Monthly XP']):,}", selected_month)
+        with b: metric("Overall XP", f"{int(row['Overall XP']):,}", "Cumulative")
+        with c: metric("Badges captured", str(len(captured)), row["Badge"])
+        with d: metric("Monthly rank", f"#{int(row['Monthly Rank'])}", selected_month)
+        with e:
             progress_rank = row["Progress Rank"]
             metric(
                 "Progress rank",
                 f"#{int(progress_rank)}" if pd.notna(progress_rank) else "—",
                 f"{row['Progress Average']:.1f}" if pd.notna(row["Progress Average"]) else "No marks",
             )
+        st.subheader("Captured badges")
+        if captured:
+            badge_columns = st.columns(len(captured))
+            for column, badge in zip(badge_columns, captured):
+                with column:
+                    st.markdown(
+                        f'<div class="metric-card" style="text-align:center">'
+                        f'<div class="metric-value">✓</div><b>{badge}</b>'
+                        f'<div class="metric-note">Captured</div></div>',
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info("No badges captured yet. The first badge unlocks at 100 overall XP.")
 
     xp_tab, progress_tab = st.tabs(["XP leaderboard", "Progress leaderboard"])
     with xp_tab:
@@ -1207,19 +1225,25 @@ def student_leaderboard_page() -> None:
         monthly = individuals.sort_values(
             ["Monthly Rank", "Overall Rank", "Student"]
         )[
-            ["Monthly Rank", "Student", "NO MATRIK", "Class", "Monthly XP", "Overall XP"]
+            [
+                "Monthly Rank", "Student", "NO MATRIK", "Class",
+                "Monthly XP", "Overall XP", "Badge",
+            ]
         ]
         st.dataframe(monthly, hide_index=True, width="stretch")
         st.subheader("Individual · Overall")
         overall = individuals.sort_values(["Overall Rank", "Student"])[
-            ["Overall Rank", "Student", "NO MATRIK", "Class", "Overall XP", "Monthly XP"]
+            [
+                "Overall Rank", "Student", "NO MATRIK", "Class",
+                "Overall XP", "Monthly XP", "Badge",
+            ]
         ]
         st.dataframe(overall, hide_index=True, width="stretch")
         st.subheader(f"Class · {selected_month}")
         class_monthly = classes.sort_values(["Monthly Rank", "Class"])[
             [
                 "Monthly Rank", "Class", "Students", "Monthly XP Average",
-                "Monthly XP Total", "Overall XP Average",
+                "Monthly XP Total", "Overall XP Average", "Class Badge",
             ]
         ]
         st.dataframe(class_monthly, hide_index=True, width="stretch")
@@ -1227,7 +1251,7 @@ def student_leaderboard_page() -> None:
         class_overall = classes.sort_values(["Overall Rank", "Class"])[
             [
                 "Overall Rank", "Class", "Students", "Overall XP Average",
-                "Overall XP Total", "Monthly XP Average",
+                "Overall XP Total", "Monthly XP Average", "Class Badge",
             ]
         ]
         st.dataframe(class_overall, hide_index=True, width="stretch")
@@ -1828,6 +1852,15 @@ def admin_student_records_page() -> None:
         "Combined background, progress and XP records with field-level filters.",
     )
     merged, live = merged_students()
+    technical_columns = [
+        column
+        for column in merged.columns
+        if (
+            str(column).lower() in {"id", "created_at", "updated_at"}
+            or str(column).lower().startswith(("id_", "created_at_", "updated_at_"))
+        )
+    ]
+    merged = merged.drop(columns=technical_columns, errors="ignore")
     if merged.empty:
         st.info("No student records are available.")
         return
@@ -2017,7 +2050,7 @@ def analysis_xp_page() -> None:
         monthly_classes = classes.sort_values(["Monthly Rank", "Class"])[
             [
                 "Monthly Rank", "Class", "Students", "Monthly XP Average",
-                "Monthly XP Total", "Overall XP Average",
+                "Monthly XP Total", "Overall XP Average", "Class Badge",
             ]
         ]
         st.dataframe(monthly_classes, hide_index=True, width="stretch")
@@ -2025,7 +2058,7 @@ def analysis_xp_page() -> None:
         overall_classes = classes.sort_values(["Overall Rank", "Class"])[
             [
                 "Overall Rank", "Class", "Students", "Overall XP Average",
-                "Overall XP Total", "Monthly XP Average",
+                "Overall XP Total", "Monthly XP Average", "Class Badge",
             ]
         ]
         st.dataframe(overall_classes, hide_index=True, width="stretch")
@@ -2428,7 +2461,8 @@ def main() -> None:
     )
     if role not in {"Student", "Admin"}:
         role = "Student"
-    page = sidebar(role, user["name"])
+    display_name = student_nickname(user) if role == "Student" else user["name"]
+    page = sidebar(role, display_name)
     if role == "Student":
         {
             "Progress": progress_page,
@@ -2436,7 +2470,7 @@ def main() -> None:
             "Quiz": quiz_page,
             "Leaderboard": student_leaderboard_page,
             "Profile": profile_page,
-            "XP & Badge": xp_badge_page,
+            "XP": xp_badge_page,
         }[page]()
     else:
         {
