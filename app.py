@@ -753,7 +753,8 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Profile", "Materials", "Leaderboard", "Progress", "XP", "Quiz"
+                "Profile", "Materials", "My XP", "Leaderboard",
+                "Progress", "Request XP", "Quiz"
             ],
             "Admin": [
                 "User access",
@@ -794,7 +795,10 @@ def sidebar(role: str, name: str) -> str:
 
 def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
-        "Student": ["Profile", "Materials", "Leaderboard", "Progress", "XP", "Quiz"],
+        "Student": [
+            "Profile", "Materials", "My XP", "Leaderboard",
+            "Progress", "Request XP", "Quiz",
+        ],
         "Admin": [
             "User access", "CRUD", "Material", "Quiz", "Award XP",
             "Student record", "Analysis background", "Analysis progress",
@@ -997,16 +1001,15 @@ def progress_standings(
         .agg(
             Students=("NO MATRIK", "nunique"),
             **{
-                "Median mark": ("Mark", "median"),
-                "Highest mark": ("Mark", "max"),
+                "Average mark": ("Mark", "mean"),
                 "Results available": ("Mark", "count"),
             },
         )
         .reset_index()
     )
     if not classes.empty:
-        classes["Rank"] = classes["Median mark"].rank(method="min", ascending=False).astype(int)
-        classes = classes.sort_values(["Rank", "Highest mark", "Class"], ascending=[True, False, True])
+        classes["Rank"] = classes["Average mark"].rank(method="min", ascending=False).astype(int)
+        classes = classes.sort_values(["Rank", "Class"])
     return individual, classes
 
 
@@ -1326,7 +1329,7 @@ def profile_page() -> None:
                         st.success("Password changed successfully.")
 
 
-def xp_badge_page() -> None:
+def _legacy_xp_badge_page() -> None:
     heading(
         "Recognition request",
         "XP",
@@ -1441,7 +1444,7 @@ def xp_badge_page() -> None:
             )
 
 
-def student_leaderboard_page() -> None:
+def _legacy_student_leaderboard_page() -> None:
     heading(
         "Healthy competition",
         "Leaderboard",
@@ -1545,6 +1548,225 @@ def student_leaderboard_page() -> None:
             st.subheader(f"Class · {selected_assessment}")
             st.caption("Classes are ranked by the median mark for this assessment.")
             st.dataframe(class_progress, hide_index=True, width="stretch")
+
+
+def request_xp_page() -> None:
+    heading("", "Request XP")
+    user = st.session_state.get("user", {})
+    claims, live = fetch_table("xp_claims", pd.DataFrame())
+    if live and "NO MATRIK" in claims.columns:
+        claims = claims[
+            claims["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
+        ]
+
+    request_tab, list_tab = st.tabs(["REQUEST XP", "MY XP REQUEST"])
+    with request_tab:
+        with st.form("student_xp_request", clear_on_submit=True):
+            claim_type = st.selectbox(
+                "XP type",
+                ["consultation", "class_participation", "commitment", "study_group"],
+                format_func=lambda value: value.replace("_", " ").title(),
+            )
+            title = st.text_input("Request title")
+            description = st.text_area("Describe the activity")
+            proof = st.file_uploader(
+                "Proof image (optional)", type=["jpg", "jpeg", "png", "webp"]
+            )
+            if st.form_submit_button("Send for approval", type="primary"):
+                if not title.strip() or not description.strip():
+                    st.error("Complete the title and description.")
+                elif is_demo():
+                    st.success("Demo request submitted.")
+                else:
+                    client = db()
+                    path = None
+                    if proof:
+                        path = f"{user['id']}/{datetime.now().timestamp()}-{proof.name}"
+                        ok, result = upload_file(
+                            "xp-proofs", path, proof.getvalue(), proof.type
+                        )
+                        if not ok:
+                            st.error(result)
+                            st.stop()
+                    try:
+                        client.table("xp_claims").insert({
+                            "student_user_id": user["id"],
+                            "NO MATRIK": user["no_matrik"],
+                            "claim_type": claim_type,
+                            "title": title.strip(),
+                            "description": description.strip(),
+                            "proof_path": path,
+                            "status": "pending",
+                        }).execute()
+                        st.success("Request submitted for Admin review.")
+                    except Exception as exc:
+                        st.error(f"Request could not be submitted: {exc}")
+    with list_tab:
+        if claims.empty:
+            st.info("No XP requests submitted yet.")
+        else:
+            visible = [
+                column for column in
+                ["created_at", "claim_type", "title", "status", "admin_note"]
+                if column in claims.columns
+            ]
+            st.dataframe(
+                claims[visible].sort_values("created_at", ascending=False),
+                hide_index=True, width="stretch",
+            )
+
+
+def my_xp_page() -> None:
+    heading("", "My XP")
+    user = st.session_state.get("user", {})
+    _, _, months, default_month = leaderboard_data()
+    selected_month = st.selectbox(
+        "XP month", months, index=months.index(default_month),
+    )
+    individuals, _, _, _ = leaderboard_data(selected_month)
+    own = individuals[
+        individuals["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
+    ] if not individuals.empty else pd.DataFrame()
+    if own.empty and is_demo():
+        own = individuals.head(1)
+    row = own.iloc[0] if not own.empty else None
+    current_xp = int(row["Overall XP"]) if row is not None else 0
+    history, history_live = fetch_table("xp_events", pd.DataFrame())
+    if history_live and "NO MATRIK" in history.columns:
+        history = history[
+            history["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
+        ]
+
+    history_tab, summary_tab, badge_tab = st.tabs(
+        ["XP HISTORY", "XP SUMMARY", "BADGE SUMMARY"]
+    )
+    with history_tab:
+        if history.empty:
+            st.info("No XP has been recorded yet.")
+        else:
+            visible = [
+                c for c in
+                ["created_at", "rule_code", "points", "reason", "award_mode"]
+                if c in history.columns
+            ]
+            st.dataframe(
+                history[visible].sort_values("created_at", ascending=False),
+                hide_index=True, width="stretch",
+            )
+    with summary_tab:
+        if row is None:
+            st.info("XP summary is not available.")
+        else:
+            a, b, c, d = st.columns(4)
+            with a: metric("Monthly XP", f"{int(row['Monthly XP']):,}")
+            with b: metric("Overall XP", f"{int(row['Overall XP']):,}")
+            with c: metric("Monthly rank", f"#{int(row['Monthly Rank'])}")
+            with d: metric("Overall rank", f"#{int(row['Overall Rank'])}")
+    with badge_tab:
+        thresholds = [
+            (100, "Starter"), (300, "Active learner"),
+            (600, "Achiever"), (1000, "XP Elite"),
+        ]
+        captured = [
+            (points, badge) for points, badge in thresholds
+            if current_xp >= points
+        ]
+        next_badge = next(
+            ((points, badge) for points, badge in thresholds if current_xp < points),
+            None,
+        )
+        a, b = st.columns(2)
+        with a: metric("Badges captured", str(len(captured)))
+        with b: metric(
+            "Current badge", captured[-1][1] if captured else "None"
+        )
+        if next_badge:
+            remaining = next_badge[0] - current_xp
+            st.subheader(f"{remaining:,} XP TO {next_badge[1].upper()}")
+            previous = captured[-1][0] if captured else 0
+            st.progress(
+                min(1.0, max(0.0, (current_xp - previous) / (next_badge[0] - previous)))
+            )
+        else:
+            st.success("All current badges captured.")
+        if captured:
+            st.dataframe(
+                pd.DataFrame(captured, columns=["XP threshold", "Badge"]),
+                hide_index=True, width="stretch",
+            )
+
+
+def student_leaderboard_page() -> None:
+    heading("", "Leaderboard")
+    _, _, months, default_month = leaderboard_data()
+    selected_month = st.selectbox(
+        "XP month", months, index=months.index(default_month),
+        key="leaderboard_xp_month",
+    )
+    individuals, classes, _, _ = leaderboard_data(selected_month)
+    merged, _ = merged_students()
+    excluded = {
+        "UPS 1", "UPS 2", "INDIVIDUAL ASSIGNMENT", "GROUP ASSIGNMENT"
+    }
+    assessments = [
+        c for c in ASSESSMENT_COLUMNS
+        if c in merged.columns and c not in excluded
+    ]
+    assessment = st.selectbox(
+        "Progress assessment", assessments,
+        key="student_leaderboard_assessment",
+    ) if assessments else None
+    individual_progress, class_progress = (
+        progress_standings(assessment)
+        if assessment else (pd.DataFrame(), pd.DataFrame())
+    )
+
+    xp_individual, xp_class, progress_individual, progress_class = st.tabs([
+        "XP (INDIVIDUAL)", "XP (CLASS)",
+        "PROGRESS (INDIVIDUAL)", "PROGRESS (CLASS)",
+    ])
+    with xp_individual:
+        if individuals.empty:
+            st.info("Individual XP leaderboard is not available.")
+        else:
+            st.dataframe(
+                individuals[[
+                    "Monthly Rank", "Overall Rank", "Student", "Class",
+                    "Monthly XP", "Overall XP",
+                ]].sort_values(["Monthly Rank", "Overall Rank", "Student"]),
+                hide_index=True, width="stretch",
+            )
+    with xp_class:
+        if classes.empty:
+            st.info("Class XP leaderboard is not available.")
+        else:
+            st.dataframe(
+                classes[[
+                    "Monthly Rank", "Overall Rank", "Class", "Students",
+                    "Monthly XP Average", "Monthly XP Total",
+                    "Overall XP Average", "Overall XP Total",
+                ]].sort_values(["Monthly Rank", "Overall Rank", "Class"]),
+                hide_index=True, width="stretch",
+            )
+    with progress_individual:
+        if individual_progress.empty:
+            st.info("Individual progress leaderboard is not available.")
+        else:
+            st.dataframe(
+                individual_progress[["Rank", "Student", "Class", "Mark"]],
+                hide_index=True, width="stretch",
+            )
+    with progress_class:
+        if class_progress.empty:
+            st.info("Class progress leaderboard is not available.")
+        else:
+            st.dataframe(
+                class_progress[[
+                    "Rank", "Class", "Students", "Average mark",
+                    "Results available",
+                ]],
+                hide_index=True, width="stretch",
+            )
 
 
 def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
@@ -2416,7 +2638,7 @@ def analysis_progress_page() -> None:
     st.subheader(f"Individual leaderboard · {assessment}")
     st.dataframe(individual_progress, hide_index=True, width="stretch")
     st.subheader(f"Class leaderboard · {assessment}")
-    st.caption("Classes are ranked by the median mark for this assessment.")
+    st.caption("Classes are ranked by the average mark for this assessment.")
     st.dataframe(class_progress, hide_index=True, width="stretch")
 
 
@@ -2978,9 +3200,10 @@ def main() -> None:
             "Progress": progress_page,
             "Materials": materials_page,
             "Quiz": quiz_page,
+            "My XP": my_xp_page,
             "Leaderboard": student_leaderboard_page,
             "Profile": profile_page,
-            "XP": xp_badge_page,
+            "Request XP": request_xp_page,
         }[page]()
     else:
         {
