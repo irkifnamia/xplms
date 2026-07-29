@@ -742,10 +742,31 @@ def admin_page_menu(sidebar_page: str) -> str:
                 st.session_state.admin_page_override = option
                 st.rerun()
         st.divider()
+        if st.button(
+            "Preview Student workspace",
+            key="admin_main_menu_preview_student",
+            width="stretch",
+        ):
+            st.session_state.admin_preview_role = "Student"
+            st.rerun()
         if st.button("Sign out", key="admin_main_menu_signout", width="stretch"):
             st.session_state.clear()
             st.rerun()
     return current_page
+
+
+def admin_preview_return_menu() -> None:
+    """Let an administrator leave the Student preview on every screen size."""
+    with st.popover("← Admin workspace", use_container_width=False):
+        st.caption("You are previewing the Student workspace.")
+        if st.button(
+            "Return to Admin workspace",
+            key="return_to_admin_workspace",
+            type="primary",
+            width="stretch",
+        ):
+            st.session_state.admin_preview_role = "Admin"
+            st.rerun()
 
 
 def login() -> None:
@@ -1678,6 +1699,8 @@ def main() -> None:
     page = sidebar(role, user["name"])
     if role == "Admin":
         page = admin_page_menu(page)
+    elif actual_role == "Admin":
+        admin_preview_return_menu()
     if role == "Student":
         {
             "Progress": progress_page,
