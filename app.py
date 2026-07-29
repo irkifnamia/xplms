@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import hashlib
 import json
@@ -46,6 +47,7 @@ class GeneratedQuiz(BaseModel):
 
 
 LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.png"
+AFJ_LOGO_PATH = Path(__file__).parent / "assets" / "afj.jpeg"
 LOGO_IMAGE = Image.open(LOGO_PATH)
 
 st.set_page_config(
@@ -671,11 +673,30 @@ def heading(eyebrow: str, title: str, copy: str = "") -> None:
     )
 
 
+def centered_image(path: Path, width: int, caption: str = "") -> None:
+    """Render an image in a stable centred wrapper on desktop and mobile."""
+    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    caption_html = (
+        f'<div style="margin-bottom:7px;color:#5f6b7a;font-size:.68rem;'
+        f'font-weight:800;letter-spacing:.14em">{caption}</div>'
+        if caption
+        else ""
+    )
+    st.markdown(
+        f'<div style="width:100%;text-align:center">{caption_html}'
+        f'<img src="data:{mime};base64,{encoded}" alt="" '
+        f'style="display:block;width:{width}px;max-width:100%;height:auto;'
+        f'margin:0 auto"></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def sidebar(role: str, name: str) -> str:
     with st.sidebar:
         if role == "Student":
             st.markdown('<span class="student-sidebar-marker"></span>', unsafe_allow_html=True)
-        st.image(LOGO_IMAGE, width=112)
+        centered_image(LOGO_PATH, 112)
         st.caption("Experience-led learning")
         st.markdown(
             f'<div class="userbox"><b>{name}</b><br><small>{role} workspace</small></div>',
@@ -725,6 +746,7 @@ def sidebar(role: str, name: str) -> str:
         labels = {item: item.upper() for items in menus.values() for item in items}
         chosen = st.radio("Navigation", menus[role], format_func=lambda x: labels[x], label_visibility="collapsed")
         st.divider()
+        centered_image(AFJ_LOGO_PATH, 62, "EMPOWERED BY")
         if st.button("Sign out", use_container_width=True):
             st.session_state.clear()
             st.rerun()
@@ -735,7 +757,7 @@ def login() -> None:
     left, centre, right = st.columns([1, 1.15, 1])
     with centre:
         st.markdown("<div style='height:6vh'></div>", unsafe_allow_html=True)
-        st.image(LOGO_IMAGE, width=132)
+        centered_image(LOGO_PATH, 132)
         client = db()
         if not client:
             st.error("XPLMS server access is not configured. Add SUPABASE_SECRET_KEY to Streamlit secrets.")
