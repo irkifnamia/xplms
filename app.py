@@ -688,7 +688,9 @@ def sidebar(role: str, name: str) -> str:
                 st.session_state.admin_preview_role = selected_preview
                 st.rerun()
         menus = {
-            "Student": ["Progress", "Materials", "Quiz", "Profile", "XP & Badge"],
+            "Student": [
+                "Progress", "Materials", "Quiz", "Leaderboard", "Profile", "XP & Badge"
+            ],
             "Admin": [
                 "Student record",
                 "Analysis background",
@@ -827,6 +829,139 @@ def merged_students() -> tuple[pd.DataFrame, bool]:
     return merged, live_a and live_b and live_c
 
 
+ASSESSMENT_COLUMNS = [
+    "C1C2",
+    "C5",
+    "C8",
+    "C9C10",
+    "INDIVIDUAL ASSIGNMENT",
+    "GROUP ASSIGNMENT",
+    "UPS 1",
+    "UPS 2",
+    "UPS 3",
+    # Demo/legacy compatibility; live XPLMS uses the assessment fields above.
+    "assignment",
+    "pb",
+    "task",
+]
+
+
+def leaderboard_data(
+    month: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], str]:
+    """Build fair individual and class rankings from the XP ledger."""
+    merged, _ = merged_students()
+    events, _ = fetch_table("xp_events", pd.DataFrame())
+    current_month = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).strftime("%Y-%m")
+    available_months = [current_month]
+    if not events.empty and "created_at" in events.columns:
+        event_dates = pd.to_datetime(events["created_at"], errors="coerce", utc=True)
+        event_months = (
+            event_dates.dt.tz_convert("Asia/Kuala_Lumpur")
+            .dt.strftime("%Y-%m")
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        available_months = sorted(set([*event_months, current_month]), reverse=True)
+    selected_month = month if month in available_months else available_months[0]
+    if merged.empty:
+        return pd.DataFrame(), pd.DataFrame(), available_months, selected_month
+
+    matric_col = next(
+        (column for column in ["NO MATRIK", "student_id", "stud_id"] if column in merged.columns),
+        None,
+    )
+    name_col = next(
+        (column for column in ["NAMA PELAJAR", "name", "student_name"] if column in merged.columns),
+        None,
+    )
+    class_col = next(
+        (column for column in ["KELAS", "CLASS", "class", "cohort"] if column in merged.columns),
+        None,
+    )
+    if not matric_col:
+        return pd.DataFrame(), pd.DataFrame(), available_months, selected_month
+
+    individuals = pd.DataFrame({
+        "NO MATRIK": merged[matric_col].astype(str),
+        "Student": (
+            merged[name_col].fillna("Unknown").astype(str)
+            if name_col
+            else merged[matric_col].astype(str)
+        ),
+        "Class": (
+            merged[class_col].fillna("Unassigned").astype(str)
+            if class_col
+            else "Unassigned"
+        ),
+    })
+    overall_values = (
+        merged["xp"]
+        if "xp" in merged.columns
+        else pd.Series(0, index=merged.index)
+    )
+    individuals["Overall XP"] = pd.to_numeric(
+        overall_values, errors="coerce"
+    ).fillna(0)
+
+    monthly_xp = pd.Series(dtype=float)
+    if not events.empty and {"NO MATRIK", "points", "created_at"}.issubset(events.columns):
+        event_dates = pd.to_datetime(events["created_at"], errors="coerce", utc=True)
+        event_month = event_dates.dt.tz_convert("Asia/Kuala_Lumpur").dt.strftime("%Y-%m")
+        month_events = events[event_month == selected_month].copy()
+        month_events["points"] = pd.to_numeric(month_events["points"], errors="coerce").fillna(0)
+        monthly_xp = month_events.groupby("NO MATRIK")["points"].sum()
+    individuals["Monthly XP"] = (
+        individuals["NO MATRIK"].map(monthly_xp).fillna(0)
+    )
+
+    assessment_columns = [
+        column for column in ASSESSMENT_COLUMNS if column in merged.columns
+    ]
+    if assessment_columns:
+        numeric_marks = merged[assessment_columns].apply(
+            pd.to_numeric, errors="coerce"
+        )
+        individuals["Progress Average"] = numeric_marks.mean(axis=1).round(2)
+    else:
+        individuals["Progress Average"] = pd.NA
+
+    individuals["Monthly Rank"] = (
+        individuals["Monthly XP"].rank(method="min", ascending=False).astype(int)
+    )
+    individuals["Overall Rank"] = (
+        individuals["Overall XP"].rank(method="min", ascending=False).astype(int)
+    )
+    progress_rank = individuals["Progress Average"].rank(method="min", ascending=False)
+    individuals["Progress Rank"] = progress_rank.astype("Int64")
+
+    classes = (
+        individuals.groupby("Class", dropna=False)
+        .agg(
+            Students=("NO MATRIK", "nunique"),
+            **{
+                "Monthly XP Total": ("Monthly XP", "sum"),
+                "Monthly XP Average": ("Monthly XP", "mean"),
+                "Overall XP Total": ("Overall XP", "sum"),
+                "Overall XP Average": ("Overall XP", "mean"),
+                "Progress Average": ("Progress Average", "mean"),
+            },
+        )
+        .reset_index()
+    )
+    classes["Monthly Rank"] = (
+        classes["Monthly XP Average"].rank(method="min", ascending=False).astype(int)
+    )
+    classes["Overall Rank"] = (
+        classes["Overall XP Average"].rank(method="min", ascending=False).astype(int)
+    )
+    classes["Progress Rank"] = (
+        classes["Progress Average"].rank(method="min", ascending=False).astype("Int64")
+    )
+    return individuals, classes, available_months, selected_month
+
+
 def progress_page() -> None:
     heading("Academic record", "Progress & results", "Review your latest marks and learning progress.")
     progress, _ = fetch_table("stud_progress", DEMO_PROGRESS)
@@ -942,6 +1077,13 @@ def xp_badge_page() -> None:
     own_matric = str(own.iloc[0][matric_col])
     rank_rows = ranked[ranked[matric_col].astype(str) == own_matric]
     rank = int(rank_rows.iloc[0]["Rank"]) if not rank_rows.empty else 0
+    individual_board, _, _, selected_month = leaderboard_data()
+    monthly_row = individual_board[
+        individual_board["NO MATRIK"].astype(str) == own_matric
+    ] if not individual_board.empty else pd.DataFrame()
+    monthly_xp = (
+        int(monthly_row.iloc[0]["Monthly XP"]) if not monthly_row.empty else 0
+    )
 
     badge_rules = [
         (100, "Starter", "Begin earning experience points"),
@@ -951,10 +1093,11 @@ def xp_badge_page() -> None:
     ]
     earned = [badge for threshold, badge, _ in badge_rules if xp_value >= threshold]
     next_badge = next(((threshold, badge) for threshold, badge, _ in badge_rules if xp_value < threshold), None)
-    a, b, c = st.columns(3)
-    with a: metric("Total XP", f"{int(xp_value):,}", "Current experience balance")
-    with b: metric("Class rank", f"#{rank}" if rank else "—", f"of {len(ranked)} students")
-    with c: metric("Badges earned", str(len(earned)), f"of {len(badge_rules)} available")
+    a, b, c, d = st.columns(4)
+    with a: metric("Monthly XP", f"{monthly_xp:,}", selected_month)
+    with b: metric("Overall XP", f"{int(xp_value):,}", "Cumulative balance")
+    with c: metric("Overall rank", f"#{rank}" if rank else "—", f"of {len(ranked)} students")
+    with d: metric("Badges earned", str(len(earned)), f"of {len(badge_rules)} available")
 
     st.subheader("Badge collection")
     cols = st.columns(len(badge_rules))
@@ -1024,6 +1167,85 @@ def xp_badge_page() -> None:
     else:
         visible = [c for c in ["created_at", "rule_code", "reason", "points"] if c in events.columns]
         st.dataframe(events[visible].sort_values("created_at", ascending=False), hide_index=True, width="stretch")
+
+
+def student_leaderboard_page() -> None:
+    heading(
+        "Healthy competition",
+        "Leaderboard",
+        "Compare monthly and overall XP, plus academic progress.",
+    )
+    _, _, months, default_month = leaderboard_data()
+    selected_month = st.selectbox(
+        "XP month",
+        months,
+        index=months.index(default_month),
+    )
+    individuals, classes, _, _ = leaderboard_data(selected_month)
+    if individuals.empty:
+        st.info("Leaderboard data is not available.")
+        return
+    user = st.session_state.user
+    own_matric = str(user.get("no_matrik", ""))
+    own = individuals[individuals["NO MATRIK"].astype(str) == own_matric]
+    if not own.empty:
+        row = own.iloc[0]
+        a, b, c = st.columns(3)
+        with a: metric("Monthly XP rank", f"#{int(row['Monthly Rank'])}", selected_month)
+        with b: metric("Overall XP rank", f"#{int(row['Overall Rank'])}", f"{int(row['Overall XP'])} XP")
+        with c:
+            progress_rank = row["Progress Rank"]
+            metric(
+                "Progress rank",
+                f"#{int(progress_rank)}" if pd.notna(progress_rank) else "—",
+                f"{row['Progress Average']:.1f}" if pd.notna(row["Progress Average"]) else "No marks",
+            )
+
+    xp_tab, progress_tab = st.tabs(["XP leaderboard", "Progress leaderboard"])
+    with xp_tab:
+        st.subheader(f"Individual · {selected_month}")
+        monthly = individuals.sort_values(
+            ["Monthly Rank", "Overall Rank", "Student"]
+        )[
+            ["Monthly Rank", "Student", "NO MATRIK", "Class", "Monthly XP", "Overall XP"]
+        ]
+        st.dataframe(monthly, hide_index=True, width="stretch")
+        st.subheader("Individual · Overall")
+        overall = individuals.sort_values(["Overall Rank", "Student"])[
+            ["Overall Rank", "Student", "NO MATRIK", "Class", "Overall XP", "Monthly XP"]
+        ]
+        st.dataframe(overall, hide_index=True, width="stretch")
+        st.subheader(f"Class · {selected_month}")
+        class_monthly = classes.sort_values(["Monthly Rank", "Class"])[
+            [
+                "Monthly Rank", "Class", "Students", "Monthly XP Average",
+                "Monthly XP Total", "Overall XP Average",
+            ]
+        ]
+        st.dataframe(class_monthly, hide_index=True, width="stretch")
+        st.subheader("Class · Overall")
+        class_overall = classes.sort_values(["Overall Rank", "Class"])[
+            [
+                "Overall Rank", "Class", "Students", "Overall XP Average",
+                "Overall XP Total", "Monthly XP Average",
+            ]
+        ]
+        st.dataframe(class_overall, hide_index=True, width="stretch")
+    with progress_tab:
+        st.subheader("Individual progress")
+        progress = individuals.dropna(subset=["Progress Average"]).sort_values(
+            ["Progress Rank", "Student"]
+        )[
+            ["Progress Rank", "Student", "NO MATRIK", "Class", "Progress Average"]
+        ]
+        st.dataframe(progress, hide_index=True, width="stretch")
+        st.subheader("Class progress")
+        class_progress = classes.dropna(subset=["Progress Average"]).sort_values(
+            ["Progress Rank", "Class"]
+        )[
+            ["Progress Rank", "Class", "Students", "Progress Average"]
+        ]
+        st.dataframe(class_progress, hide_index=True, width="stretch")
 
 
 def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
@@ -1697,6 +1919,11 @@ def analysis_progress_page() -> None:
         ]
         if column in progress.columns
     ]
+    if not assessments:
+        assessments = [
+            column for column in ["assignment", "pb", "task"]
+            if column in progress.columns
+        ]
     if progress.empty or not assessments:
         st.info("No assessment results are available.")
         return
@@ -1721,6 +1948,21 @@ def analysis_progress_page() -> None:
             .value_counts().rename_axis("Zone").reset_index(name="Students")
         )
         st.dataframe(zones, hide_index=True, width="stretch")
+    individuals, classes, _, _ = leaderboard_data()
+    st.subheader("Individual progress leaderboard")
+    individual_progress = individuals.dropna(subset=["Progress Average"]).sort_values(
+        ["Progress Rank", "Student"]
+    )[
+        ["Progress Rank", "Student", "NO MATRIK", "Class", "Progress Average"]
+    ]
+    st.dataframe(individual_progress, hide_index=True, width="stretch")
+    st.subheader("Class progress leaderboard")
+    class_progress = classes.dropna(subset=["Progress Average"]).sort_values(
+        ["Progress Rank", "Class"]
+    )[
+        ["Progress Rank", "Class", "Students", "Progress Average"]
+    ]
+    st.dataframe(class_progress, hide_index=True, width="stretch")
 
 
 def analysis_xp_page() -> None:
@@ -1729,29 +1971,64 @@ def analysis_xp_page() -> None:
         "Analysis XP",
         "Review XP balances, badges and student rank.",
     )
-    merged, _ = merged_students()
-    if merged.empty or "xp" not in merged.columns:
+    _, _, months, default_month = leaderboard_data()
+    selected_month = st.selectbox(
+        "Reward month",
+        months,
+        index=months.index(default_month),
+    )
+    individuals, classes, _, _ = leaderboard_data(selected_month)
+    if individuals.empty:
         st.info("No XP records are available.")
         return
-    board = merged.copy()
-    board["xp"] = pd.to_numeric(board["xp"], errors="coerce").fillna(0)
-    board = board.sort_values("xp", ascending=False).reset_index(drop=True)
-    board["Rank"] = board.index + 1
-    board["Badge"] = pd.cut(
-        board["xp"],
+    individuals["Badge"] = pd.cut(
+        individuals["Overall XP"],
         bins=[-1, 99, 299, 599, 999, float("inf")],
         labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
     ).astype(str)
     a, b, c = st.columns(3)
-    with a: metric("Total XP", f"{int(board['xp'].sum()):,}", "Across all students")
-    with b: metric("Average XP", f"{board['xp'].mean():.1f}", "Per student")
-    with c: metric("Ranked students", str(len(board)), "Current leaderboard")
-    keep = [
-        column for column in
-        ["Rank", "NAMA PELAJAR", "name", "NO MATRIK", "student_id", "xp", "Badge"]
-        if column in board.columns
-    ]
-    st.dataframe(board[keep], hide_index=True, width="stretch")
+    with a: metric("Monthly XP", f"{int(individuals['Monthly XP'].sum()):,}", selected_month)
+    with b: metric("Overall XP", f"{int(individuals['Overall XP'].sum()):,}", "Cumulative balance")
+    with c: metric("Ranked students", str(len(individuals)), "Eligible individuals")
+
+    monthly_tab, overall_tab, class_tab = st.tabs(
+        ["Monthly individual", "Overall individual", "Class leaderboard"]
+    )
+    with monthly_tab:
+        monthly = individuals.sort_values(
+            ["Monthly Rank", "Overall Rank", "Student"]
+        )[
+            [
+                "Monthly Rank", "Student", "NO MATRIK", "Class",
+                "Monthly XP", "Overall XP", "Badge",
+            ]
+        ]
+        st.dataframe(monthly, hide_index=True, width="stretch")
+    with overall_tab:
+        overall = individuals.sort_values(["Overall Rank", "Student"])[
+            [
+                "Overall Rank", "Student", "NO MATRIK", "Class",
+                "Overall XP", "Monthly XP", "Badge",
+            ]
+        ]
+        st.dataframe(overall, hide_index=True, width="stretch")
+    with class_tab:
+        st.subheader(f"Monthly class ranking · {selected_month}")
+        monthly_classes = classes.sort_values(["Monthly Rank", "Class"])[
+            [
+                "Monthly Rank", "Class", "Students", "Monthly XP Average",
+                "Monthly XP Total", "Overall XP Average",
+            ]
+        ]
+        st.dataframe(monthly_classes, hide_index=True, width="stretch")
+        st.subheader("Overall class ranking")
+        overall_classes = classes.sort_values(["Overall Rank", "Class"])[
+            [
+                "Overall Rank", "Class", "Students", "Overall XP Average",
+                "Overall XP Total", "Monthly XP Average",
+            ]
+        ]
+        st.dataframe(overall_classes, hide_index=True, width="stretch")
 
 
 def analysis_material_page() -> None:
@@ -2157,6 +2434,7 @@ def main() -> None:
             "Progress": progress_page,
             "Materials": materials_page,
             "Quiz": quiz_page,
+            "Leaderboard": student_leaderboard_page,
             "Profile": profile_page,
             "XP & Badge": xp_badge_page,
         }[page]()
