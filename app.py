@@ -282,7 +282,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
   [data-testid="stHeader"] [data-testid="stDeployButton"] {
     display:none !important;
   }
-  [data-testid="collapsedControl"] {
+  [data-testid="collapsedControl"],
+  [data-testid="stExpandSidebarButton"] {
     display:flex !important;
     visibility:visible !important;
     position:fixed !important;
@@ -290,7 +291,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     left:.7rem !important;
     z-index:1000000 !important;
   }
-  [data-testid="collapsedControl"] button {
+  [data-testid="collapsedControl"] button,
+  [data-testid="stExpandSidebarButton"] {
     width:2.75rem !important;
     height:2.75rem !important;
     min-height:2.75rem !important;
@@ -301,11 +303,14 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     box-shadow:0 4px 14px rgba(23,35,58,.14) !important;
   }
   [data-testid="collapsedControl"] button *,
-  [data-testid="collapsedControl"] svg {
+  [data-testid="collapsedControl"] svg,
+  [data-testid="stExpandSidebarButton"] *,
+  [data-testid="stExpandSidebarButton"] svg {
     color:#17233a !important;
     fill:#17233a !important;
   }
-  body:has(.student-sidebar-marker) [data-testid="collapsedControl"] {
+  body:has(.student-sidebar-marker) [data-testid="collapsedControl"],
+  body:has(.student-sidebar-marker) [data-testid="stExpandSidebarButton"] {
     display:none !important;
   }
   body:has(.student-sidebar-marker) .block-container {
