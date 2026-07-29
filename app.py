@@ -114,15 +114,23 @@ BRAND = "#1F5DAA"
 CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
-:root { --ink:#17233a; --muted:#5f6b7a; --brand:#1f5daa; --brand-dark:#154b8c; --soft:#f4f7fa; --line:#d3dce6; }
+:root { --ink:#17233a; --muted:#5f6b7a; --brand:#1f5daa; --brand-dark:#154b8c; --cyan:#12a9c4; --gold:#f2a900; --coral:#ef6a67; --soft:#f3f7fc; --line:#d3dce6; }
 html, body, [class*="css"] { font-family:'DM Sans',sans-serif; color:var(--ink); }
 h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; }
-[data-testid="stAppViewContainer"] { background:#f4f7fa; }
+[data-testid="stAppViewContainer"] {
+  background:
+    radial-gradient(circle at 92% 8%,rgba(18,169,196,.10),transparent 24rem),
+    radial-gradient(circle at 8% 92%,rgba(242,169,0,.09),transparent 22rem),
+    #f3f7fc;
+}
 [data-testid="stMainBlockContainer"] p,
 [data-testid="stMainBlockContainer"] label,
 [data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] { color:var(--ink); }
 [data-testid="stMainBlockContainer"] [data-testid="stCaptionContainer"] { color:var(--muted); }
-[data-testid="stSidebar"] { background:#fff; border-right:1px solid #d3dce6; }
+[data-testid="stSidebar"] {
+  background:linear-gradient(180deg,#ffffff 0%,#f1f7ff 68%,#eefaf9 100%);
+  border-right:1px solid #cbd9e8;
+}
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
 [data-testid="stSidebar"] label,
@@ -130,7 +138,11 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
 [data-testid="stSidebar"] .stRadio label {
   padding:.48rem .55rem; font-weight:600; border-radius:9px; color:#252525 !important;
 }
-[data-testid="stSidebar"] .stRadio label:hover { background:#edf4fc; }
+[data-testid="stSidebar"] .stRadio label:hover { background:#dcecff; }
+[data-testid="stSidebar"] .stRadio label:has(input:checked) {
+  background:linear-gradient(90deg,#dcecff,#e5f8f7);
+  box-shadow:inset 4px 0 0 var(--brand);
+}
 [data-testid="stSidebar"] .stRadio label p,
 [data-testid="stSidebar"] .stRadio label span { color:#252525 !important; }
 [data-testid="stSidebar"] hr { border-color:#d3dce6; }
@@ -141,13 +153,16 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
 [data-testid="stSidebar"] [data-baseweb="select"] svg { fill:#171717; }
 .block-container { max-width:1440px; padding:1.8rem 2.2rem 4rem; }
 .topline { color:var(--brand); font-weight:700; text-transform:uppercase; letter-spacing:.12em; font-size:.72rem; }
-.hero { background:linear-gradient(115deg,#fff 0%,#fff 72%,#f2f7fd 100%); color:#17233a;
+.hero { background:linear-gradient(120deg,#fff 0%,#f4f9ff 58%,#e9f9f7 100%); color:#17233a;
   border:1px solid #dbe3ec; border-left:6px solid var(--brand); border-radius:18px;
-  padding:26px 30px; margin-bottom:20px; box-shadow:0 8px 24px rgba(0,0,0,.055); }
+  padding:26px 30px; margin-bottom:20px; box-shadow:0 10px 28px rgba(31,93,170,.09); position:relative; overflow:hidden; }
+.hero:after { content:""; position:absolute; width:120px; height:120px; border-radius:50%; right:-35px; top:-45px; background:rgba(242,169,0,.16); }
 .hero h1 { color:#17233a; margin:.2rem 0 .35rem; font-size:2.15rem; }
 .hero p { color:#536174 !important; margin:0; }
-.metric-card,.panel { background:white; border:1px solid var(--line); border-radius:18px; padding:18px 20px;
+.metric-card,.panel { background:linear-gradient(145deg,#fff,#f8fbff); border:1px solid var(--line); border-top:4px solid var(--brand); border-radius:18px; padding:18px 20px;
   box-shadow:0 4px 14px rgba(0,0,0,.045); }
+.metric-card:nth-child(3n+2) { border-top-color:var(--cyan); }
+.metric-card:nth-child(3n) { border-top-color:var(--gold); }
 .metric-label { color:var(--muted); font-size:.79rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
 .metric-value { color:#17233a; font-family:'Manrope'; font-size:1.7rem; font-weight:800; margin:.15rem 0; }
 .metric-note { color:var(--muted); font-size:.82rem; }
@@ -156,7 +171,7 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
 .brand { font-family:'Manrope'; font-size:1.35rem; font-weight:800; letter-spacing:-.04em; color:#17233a; }
 .brandmark { display:inline-grid; place-items:center; width:29px; height:29px; margin-right:8px; border-radius:9px;
   background:var(--brand); color:white; }
-.userbox { background:#f2f7fd; border:1px solid #c8daee; color:#17233a; padding:12px; border-radius:14px; margin:14px 0 8px; }
+.userbox { background:linear-gradient(120deg,#e7f1ff,#e6f8f6); border:1px solid #bdd6ed; color:#17233a; padding:12px; border-radius:14px; margin:14px 0 8px; }
 .userbox b { color:#17233a !important; }
 .userbox small { color:#5f6b7a !important; }
 .empty { text-align:center; padding:44px 20px; color:var(--muted); background:white; border:1px dashed #ccd0dc; border-radius:18px; }
@@ -213,7 +228,7 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   border-color:#aaa !important; caret-color:var(--brand);
 }
 [data-baseweb="input"] input::placeholder, [data-baseweb="textarea"] textarea::placeholder { color:#737373 !important; opacity:1; }
-[data-baseweb="tab-list"] { background:#ececea; border-radius:10px; padding:3px; }
+[data-baseweb="tab-list"] { background:#e8f0f9; border-radius:12px; padding:4px; gap:3px; }
 [data-testid="stAlert"] { color:#171717; }
 [data-testid="stAlert"] p, [data-testid="stAlert"] span { color:#171717 !important; }
 [aria-disabled="true"], button:disabled { opacity:1 !important; }
@@ -297,9 +312,13 @@ button[kind="segmented_control"][aria-checked="true"] *,
 [data-testid*="BaseButton-segmented"][aria-checked="true"] * { color:#fff !important; }
 
 /* Tabs and menu wording. */
-[data-baseweb="tab-list"] { background:#fff !important; border-bottom:1px solid #d8d8d3; }
+[data-baseweb="tab-list"] { background:#e8f0f9 !important; border:1px solid #cfdeed; }
 [data-baseweb="tab"] { color:#2b2b29 !important; opacity:1 !important; }
 [data-baseweb="tab"] * { color:#2b2b29 !important; opacity:1 !important; }
+[data-baseweb="tab"][aria-selected="true"],
+[data-baseweb="tab"][aria-selected="true"] {
+  background:#fff !important; border-radius:9px; box-shadow:0 2px 8px rgba(31,93,170,.12);
+}
 [data-baseweb="tab"][aria-selected="true"],
 [data-baseweb="tab"][aria-selected="true"] * { color:#154b8c !important; font-weight:700; }
 
@@ -704,11 +723,7 @@ def sidebar(role: str, name: str) -> str:
                 "Quiz",
             ],
         }
-        labels = {
-            item: item
-            for items in menus.values()
-            for item in items
-        }
+        labels = {item: item.upper() for items in menus.values() for item in items}
         chosen = st.radio("Navigation", menus[role], format_func=lambda x: labels[x], label_visibility="collapsed")
         st.divider()
         if st.button("Sign out", use_container_width=True):
@@ -751,6 +766,7 @@ def login() -> None:
                         try:
                             client.table("app_users").insert({
                                 "email": email.strip().lower(),
+                                "username": email.strip().lower(),
                                 "full_name": full_name.strip(),
                                 "role": "admin",
                                 "NO MATRIK": None,
@@ -765,14 +781,14 @@ def login() -> None:
             return
 
         with st.container(border=True):
-            email = st.text_input("Email address", placeholder="name@institution.edu")
-            password = st.text_input("Password", type="password", placeholder="Your password")
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
             if st.button("Sign in", type="primary", use_container_width=True):
                 try:
                     rows = (
                         client.table("app_users")
-                        .select('id,email,full_name,role,"NO MATRIK",password_hash,active,must_change_password')
-                        .ilike("email", email.strip())
+                        .select('id,email,username,full_name,role,"NO MATRIK",password_hash,active,must_change_password')
+                        .ilike("username", username.strip())
                         .limit(1)
                         .execute()
                         .data
@@ -800,15 +816,7 @@ def login() -> None:
                     ).eq("id", account["id"]).execute()
                     st.rerun()
                 except Exception:
-                    st.error("We couldn't sign you in. Check your email and password.")
-            st.caption("Forgot your password? Contact your XPLMS administrator.")
-        with st.expander("Preview the app"):
-            st.caption("Demo workspaces use sample data and never change Supabase.")
-            cols = st.columns(2)
-            for col, role in zip(cols, ["Student", "Admin"]):
-                if col.button(role, use_container_width=True):
-                    st.session_state.user = {"name": f"Demo {role}", "email": "demo@xplms.edu", "role": role, "id": "demo"}
-                    st.rerun()
+                    st.error("We couldn't sign you in. Check your username and password.")
 
 
 def merged_students() -> tuple[pd.DataFrame, bool]:
@@ -864,6 +872,54 @@ ASSESSMENT_COLUMNS = [
     "pb",
     "task",
 ]
+
+
+def progress_standings(
+    assessment: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Rank one assessment on its own; never combine unrelated marks."""
+    merged, _ = merged_students()
+    if merged.empty or assessment not in merged.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    matric_col = next(
+        (c for c in ["NO MATRIK", "student_id", "stud_id"] if c in merged.columns),
+        None,
+    )
+    name_col = next(
+        (c for c in ["NICKNAME PELAJAR", "nickname", "NAMA PELAJAR", "name"] if c in merged.columns),
+        None,
+    )
+    class_col = next(
+        (c for c in ["KELAS", "CLASS", "class", "cohort"] if c in merged.columns),
+        None,
+    )
+    if not matric_col:
+        return pd.DataFrame(), pd.DataFrame()
+    marks = pd.to_numeric(merged[assessment], errors="coerce")
+    individual = pd.DataFrame({
+        "Student": merged[name_col].fillna("Unknown").astype(str) if name_col else merged[matric_col].astype(str),
+        "NO MATRIK": merged[matric_col].astype(str),
+        "Class": merged[class_col].fillna("Unassigned").astype(str) if class_col else "Unassigned",
+        "Mark": marks,
+    }).dropna(subset=["Mark"])
+    individual["Rank"] = individual["Mark"].rank(method="min", ascending=False).astype(int)
+    individual = individual.sort_values(["Rank", "Student"])
+    classes = (
+        individual.groupby("Class", dropna=False)
+        .agg(
+            Students=("NO MATRIK", "nunique"),
+            **{
+                "Median mark": ("Mark", "median"),
+                "Highest mark": ("Mark", "max"),
+                "Results available": ("Mark", "count"),
+            },
+        )
+        .reset_index()
+    )
+    if not classes.empty:
+        classes["Rank"] = classes["Median mark"].rank(method="min", ascending=False).astype(int)
+        classes = classes.sort_values(["Rank", "Highest mark", "Class"], ascending=[True, False, True])
+    return individual, classes
 
 
 def leaderboard_data(
@@ -942,25 +998,12 @@ def leaderboard_data(
         individuals["NO MATRIK"].map(monthly_xp).fillna(0)
     )
 
-    assessment_columns = [
-        column for column in ASSESSMENT_COLUMNS if column in merged.columns
-    ]
-    if assessment_columns:
-        numeric_marks = merged[assessment_columns].apply(
-            pd.to_numeric, errors="coerce"
-        )
-        individuals["Progress Average"] = numeric_marks.mean(axis=1).round(2)
-    else:
-        individuals["Progress Average"] = pd.NA
-
     individuals["Monthly Rank"] = (
         individuals["Monthly XP"].rank(method="min", ascending=False).astype(int)
     )
     individuals["Overall Rank"] = (
         individuals["Overall XP"].rank(method="min", ascending=False).astype(int)
     )
-    progress_rank = individuals["Progress Average"].rank(method="min", ascending=False)
-    individuals["Progress Rank"] = progress_rank.astype("Int64")
     individuals["Badge"] = pd.cut(
         individuals["Overall XP"],
         bins=[-1, 99, 299, 599, 999, float("inf")],
@@ -976,7 +1019,6 @@ def leaderboard_data(
                 "Monthly XP Average": ("Monthly XP", "mean"),
                 "Overall XP Total": ("Overall XP", "sum"),
                 "Overall XP Average": ("Overall XP", "mean"),
-                "Progress Average": ("Progress Average", "mean"),
             },
         )
         .reset_index()
@@ -986,9 +1028,6 @@ def leaderboard_data(
     )
     classes["Overall Rank"] = (
         classes["Overall XP Average"].rank(method="min", ascending=False).astype(int)
-    )
-    classes["Progress Rank"] = (
-        classes["Progress Average"].rank(method="min", ascending=False).astype("Int64")
     )
     classes["Class Badge"] = pd.cut(
         classes["Overall XP Average"],
@@ -1093,6 +1132,41 @@ def profile_page() -> None:
     ]
     st.subheader("Student background")
     st.dataframe(pd.DataFrame(details), hide_index=True, width="stretch")
+    st.subheader("Change password")
+    st.caption("Your new password is stored as a secure hash. It cannot be viewed by Admin.")
+    with st.form("student_change_password"):
+        current_password = st.text_input("Current password", type="password")
+        new_password = st.text_input("New password", type="password")
+        confirm_password = st.text_input("Confirm new password", type="password")
+        if st.form_submit_button("Change password", type="primary"):
+            if is_demo():
+                st.success("Password change is disabled in demo mode.")
+            elif new_password != confirm_password:
+                st.error("The new passwords do not match.")
+            elif not valid_password(new_password):
+                st.error("Use at least 10 characters with uppercase, lowercase and a number.")
+            else:
+                client = db()
+                account = (
+                    client.table("app_users")
+                    .select("password_hash")
+                    .eq("id", user["id"])
+                    .single()
+                    .execute()
+                    .data
+                )
+                if not account or not bcrypt.checkpw(
+                    current_password.encode("utf-8"),
+                    account["password_hash"].encode("utf-8"),
+                ):
+                    st.error("The current password is incorrect.")
+                else:
+                    client.table("app_users").update({
+                        "password_hash": hash_password(new_password),
+                        "must_change_password": False,
+                        "password_changed_at": datetime.now().isoformat(),
+                    }).eq("id", user["id"]).execute()
+                    st.success("Password changed successfully.")
 
 
 def xp_badge_page() -> None:
@@ -1102,62 +1176,110 @@ def xp_badge_page() -> None:
         "Request XP for a verified learning activity.",
     )
     user = st.session_state.get("user", {})
-    st.write(
-        "Submit evidence for consultation, class participation, commitment or "
-        "a study group. An Admin will review the request."
-    )
-    with st.form("xp_proof_claim", clear_on_submit=True):
-        claim_type = st.selectbox(
-            "XP type",
-            ["consultation", "class_participation", "commitment", "study_group"],
-            format_func=lambda value: value.replace("_", " ").title(),
-        )
-        title = st.text_input("Request title")
-        description = st.text_area("Describe the activity and what you learned")
-        proof = st.file_uploader("Proof image", type=["jpg", "jpeg", "png", "webp"])
-        if st.form_submit_button("Send for approval", type="primary"):
-            if not title.strip() or not description.strip() or not proof:
-                st.error("Complete the title, description and proof image.")
-            elif is_demo():
-                st.success("Demo request submitted for Admin approval.")
-            else:
-                client = db()
-                path = f"{user['id']}/{datetime.now().timestamp()}-{proof.name}"
-                ok, result = upload_file("xp-proofs", path, proof.getvalue(), proof.type)
-                if not ok:
-                    st.error(result)
-                else:
-                    try:
-                        client.table("xp_claims").insert({
-                            "student_user_id": user["id"],
-                            "NO MATRIK": user["no_matrik"],
-                            "claim_type": claim_type,
-                            "title": title.strip(),
-                            "description": description.strip(),
-                            "proof_path": path,
-                            "status": "pending",
-                        }).execute()
-                        st.success("Request submitted. An Admin will review it.")
-                    except Exception as exc:
-                        st.error(f"Request could not be submitted: {exc}")
-
     claims, live = fetch_table("xp_claims", pd.DataFrame())
     if live and "NO MATRIK" in claims.columns:
         claims = claims[claims["NO MATRIK"].astype(str) == str(user.get("no_matrik"))]
-    st.subheader("My XP requests")
-    if claims.empty:
-        st.info("No XP requests submitted yet.")
-    else:
-        visible = [
-            column for column in
-            ["created_at", "claim_type", "title", "status", "admin_note"]
-            if column in claims.columns
-        ]
-        st.dataframe(
-            claims[visible].sort_values("created_at", ascending=False),
-            hide_index=True,
-            width="stretch",
+    history, history_live = fetch_table("xp_events", pd.DataFrame())
+    if history_live and "NO MATRIK" in history.columns:
+        history = history[history["NO MATRIK"].astype(str) == str(user.get("no_matrik"))]
+    individuals, _, _, _ = leaderboard_data()
+    own = individuals[
+        individuals["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
+    ] if not individuals.empty else pd.DataFrame()
+    current_xp = int(own.iloc[0]["Overall XP"]) if not own.empty else 0
+
+    request_tab, list_tab, history_tab, badge_tab = st.tabs(
+        ["REQUEST XP", "MY XP REQUEST", "MY XP HISTORY", "MY BADGE"]
+    )
+    with request_tab:
+        st.write(
+            "Submit evidence for consultation, class participation, commitment or "
+            "a study group. An Admin will review the request."
         )
+        with st.form("xp_proof_claim", clear_on_submit=True):
+            claim_type = st.selectbox(
+                "XP type",
+                ["consultation", "class_participation", "commitment", "study_group"],
+                format_func=lambda value: value.replace("_", " ").title(),
+            )
+            title = st.text_input("Request title")
+            description = st.text_area("Describe the activity and what you learned")
+            proof = st.file_uploader("Proof image", type=["jpg", "jpeg", "png", "webp"])
+            if st.form_submit_button("Send for approval", type="primary"):
+                if not title.strip() or not description.strip() or not proof:
+                    st.error("Complete the title, description and proof image.")
+                elif is_demo():
+                    st.success("Demo request submitted for Admin approval.")
+                else:
+                    client = db()
+                    path = f"{user['id']}/{datetime.now().timestamp()}-{proof.name}"
+                    ok, result = upload_file("xp-proofs", path, proof.getvalue(), proof.type)
+                    if not ok:
+                        st.error(result)
+                    else:
+                        try:
+                            client.table("xp_claims").insert({
+                                "student_user_id": user["id"],
+                                "NO MATRIK": user["no_matrik"],
+                                "claim_type": claim_type,
+                                "title": title.strip(),
+                                "description": description.strip(),
+                                "proof_path": path,
+                                "status": "pending",
+                            }).execute()
+                            st.success("Request submitted. An Admin will review it.")
+                        except Exception as exc:
+                            st.error(f"Request could not be submitted: {exc}")
+    with list_tab:
+        if claims.empty:
+            st.info("No XP requests submitted yet.")
+        else:
+            visible = [
+                column for column in
+                ["created_at", "claim_type", "title", "status", "admin_note"]
+                if column in claims.columns
+            ]
+            st.dataframe(
+                claims[visible].sort_values("created_at", ascending=False),
+                hide_index=True, width="stretch",
+            )
+    with history_tab:
+        if history.empty:
+            st.info("No XP has been recorded yet.")
+        else:
+            visible = [
+                c for c in ["created_at", "rule_code", "points", "reason", "award_mode", "source_id"]
+                if c in history.columns
+            ]
+            st.dataframe(
+                history[visible].sort_values("created_at", ascending=False),
+                hide_index=True, width="stretch",
+            )
+    with badge_tab:
+        thresholds = [(100, "Starter"), (300, "Active learner"), (600, "Achiever"), (1000, "XP Elite")]
+        captured = [(points, badge) for points, badge in thresholds if current_xp >= points]
+        next_badge = next(((points, badge) for points, badge in thresholds if current_xp < points), None)
+        a, b = st.columns(2)
+        with a: metric("Current XP", f"{current_xp:,}", "Overall cumulative")
+        with b:
+            metric(
+                "Current badge",
+                captured[-1][1] if captured else "None",
+                f"{len(captured)} captured",
+            )
+        if next_badge:
+            remaining = next_badge[0] - current_xp
+            st.subheader(f"{remaining:,} XP to {next_badge[1]}")
+            previous = captured[-1][0] if captured else 0
+            span = next_badge[0] - previous
+            st.progress(min(1.0, max(0.0, (current_xp - previous) / span)))
+        else:
+            st.success("All current badges captured.")
+        if captured:
+            st.dataframe(
+                pd.DataFrame(captured, columns=["XP threshold", "Badge"]),
+                hide_index=True, width="stretch",
+            )
 
 
 def student_leaderboard_page() -> None:
@@ -1193,18 +1315,11 @@ def student_leaderboard_page() -> None:
             badge for threshold, badge in badge_thresholds
             if float(row["Overall XP"]) >= threshold
         ]
-        a, b, c, d, e = st.columns(5)
+        a, b, c, d = st.columns(4)
         with a: metric("Monthly XP", f"{int(row['Monthly XP']):,}", selected_month)
         with b: metric("Overall XP", f"{int(row['Overall XP']):,}", "Cumulative")
         with c: metric("Badges captured", str(len(captured)), row["Badge"])
         with d: metric("Monthly rank", f"#{int(row['Monthly Rank'])}", selected_month)
-        with e:
-            progress_rank = row["Progress Rank"]
-            metric(
-                "Progress rank",
-                f"#{int(progress_rank)}" if pd.notna(progress_rank) else "—",
-                f"{row['Progress Average']:.1f}" if pd.notna(row["Progress Average"]) else "No marks",
-            )
         st.subheader("Captured badges")
         if captured:
             badge_columns = st.columns(len(captured))
@@ -1256,20 +1371,21 @@ def student_leaderboard_page() -> None:
         ]
         st.dataframe(class_overall, hide_index=True, width="stretch")
     with progress_tab:
-        st.subheader("Individual progress")
-        progress = individuals.dropna(subset=["Progress Average"]).sort_values(
-            ["Progress Rank", "Student"]
-        )[
-            ["Progress Rank", "Student", "NO MATRIK", "Class", "Progress Average"]
-        ]
-        st.dataframe(progress, hide_index=True, width="stretch")
-        st.subheader("Class progress")
-        class_progress = classes.dropna(subset=["Progress Average"]).sort_values(
-            ["Progress Rank", "Class"]
-        )[
-            ["Progress Rank", "Class", "Students", "Progress Average"]
-        ]
-        st.dataframe(class_progress, hide_index=True, width="stretch")
+        merged, _ = merged_students()
+        assessments = [c for c in ASSESSMENT_COLUMNS if c in merged.columns]
+        if not assessments:
+            st.info("No assessment results are available.")
+        else:
+            selected_assessment = st.selectbox(
+                "Assessment", assessments, key="student_progress_leaderboard_assessment"
+            )
+            progress, class_progress = progress_standings(selected_assessment)
+            st.caption("Each assessment is ranked independently. Different assessments are never averaged together.")
+            st.subheader(f"Individual · {selected_assessment}")
+            st.dataframe(progress, hide_index=True, width="stretch")
+            st.subheader(f"Class · {selected_assessment}")
+            st.caption("Classes are ranked by the median mark for this assessment.")
+            st.dataframe(class_progress, hide_index=True, width="stretch")
 
 
 def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
@@ -1981,20 +2097,11 @@ def analysis_progress_page() -> None:
             .value_counts().rename_axis("Zone").reset_index(name="Students")
         )
         st.dataframe(zones, hide_index=True, width="stretch")
-    individuals, classes, _, _ = leaderboard_data()
-    st.subheader("Individual progress leaderboard")
-    individual_progress = individuals.dropna(subset=["Progress Average"]).sort_values(
-        ["Progress Rank", "Student"]
-    )[
-        ["Progress Rank", "Student", "NO MATRIK", "Class", "Progress Average"]
-    ]
+    individual_progress, class_progress = progress_standings(assessment)
+    st.subheader(f"Individual leaderboard · {assessment}")
     st.dataframe(individual_progress, hide_index=True, width="stretch")
-    st.subheader("Class progress leaderboard")
-    class_progress = classes.dropna(subset=["Progress Average"]).sort_values(
-        ["Progress Rank", "Class"]
-    )[
-        ["Progress Rank", "Class", "Students", "Progress Average"]
-    ]
+    st.subheader(f"Class leaderboard · {assessment}")
+    st.caption("Classes are ranked by the median mark for this assessment.")
     st.dataframe(class_progress, hide_index=True, width="stretch")
 
 
@@ -2231,7 +2338,7 @@ def user_access_page() -> None:
         return
     users = pd.DataFrame(
         client.table("app_users")
-        .select('id,email,full_name,role,"NO MATRIK",active,must_change_password,last_login_at,created_at')
+        .select('id,username,email,full_name,role,"NO MATRIK",active,must_change_password,password_changed_at,last_login_at,created_at')
         .order("full_name")
         .execute()
         .data
@@ -2260,25 +2367,37 @@ def user_access_page() -> None:
                 suggested_name = name_map[matric]
         with st.form("create_app_user", clear_on_submit=True):
             full_name = st.text_input("Full name", value=suggested_name)
-            email = st.text_input("Email address")
-            temp_password = st.text_input("Temporary password", type="password")
+            email = st.text_input(
+                "Admin email address" if role == "Admin" else "Student email address (optional)"
+            )
+            if role == "Student":
+                st.info("The student's default username and password are both their NO MATRIK.")
+                temp_password = matric or ""
+            else:
+                temp_password = st.text_input("Temporary password", type="password")
             if st.form_submit_button(
                 "Create user", type="primary", disabled=not can_create
             ):
-                if not full_name.strip() or "@" not in email:
-                    st.error("Enter a valid name and email.")
-                elif not valid_password(temp_password):
+                if not full_name.strip() or (role == "Admin" and "@" not in email):
+                    st.error("Enter a valid name and Admin email.")
+                elif role == "Admin" and not valid_password(temp_password):
                     st.error("Use at least 10 characters with uppercase, lowercase and a number.")
                 else:
                     try:
+                        login_email = (
+                            email.strip().lower()
+                            if email.strip()
+                            else f"{matric.lower()}@student.xplms.local"
+                        )
                         client.table("app_users").insert({
-                            "email": email.strip().lower(),
+                            "email": login_email,
+                            "username": login_email if role == "Admin" else matric,
                             "full_name": full_name.strip(),
                             "role": role.lower(),
                             "NO MATRIK": matric if role == "Student" else None,
                             "password_hash": hash_password(temp_password),
                             "active": True,
-                            "must_change_password": True,
+                            "must_change_password": role == "Admin",
                         }).execute()
                         st.success(f"{role} account created. Share the temporary password securely.")
                     except Exception as exc:
@@ -2294,7 +2413,7 @@ def user_access_page() -> None:
         )
         user_ids = users["id"].astype(str).tolist()
         label_map = {
-            str(row["id"]): f"{row['full_name']} · {row['email']} · {row['role']}"
+            str(row["id"]): f"{row['full_name']} · {row['username']} · {row['role']}"
             for _, row in users.iterrows()
         }
         selected = st.selectbox("Select account", user_ids, format_func=lambda value: label_map[value])
@@ -2315,6 +2434,7 @@ def user_access_page() -> None:
                 client.table("app_users").update({
                     "password_hash": hash_password(new_password),
                     "must_change_password": True,
+                    "password_changed_at": datetime.now().isoformat(),
                 }).eq("id", selected).execute()
                 st.success("Temporary password set. The user must change it at next login.")
         st.divider()
@@ -2331,8 +2451,9 @@ def user_access_page() -> None:
                 st.rerun()
     with bulk_tab:
         st.write(
-            "Upload CSV or Excel with: email, full_name, role, NO MATRIK and "
-            "temporary_password. Role must be admin or student."
+            "Upload CSV or Excel with: full_name, role, NO MATRIK, email and "
+            "temporary_password. Student email/password may be blank; NO MATRIK "
+            "becomes both the default username and password."
         )
         upload = st.file_uploader(
             "User access file",
@@ -2346,7 +2467,7 @@ def user_access_page() -> None:
                 else pd.read_excel(upload)
             )
             st.dataframe(frame.head(50), hide_index=True, width="stretch")
-            required = {"email", "full_name", "role", "temporary_password"}
+            required = {"full_name", "role", "NO MATRIK"}
             missing = required - set(frame.columns)
             if missing:
                 st.error(f"Missing columns: {', '.join(sorted(missing))}")
@@ -2357,24 +2478,38 @@ def user_access_page() -> None:
                         role_value = str(row["role"]).strip().lower()
                         if role_value not in {"admin", "student"}:
                             raise ValueError(f"Invalid role: {row['role']}")
-                        password = str(row["temporary_password"])
-                        if not valid_password(password):
-                            raise ValueError(
-                                f"Temporary password for {row['email']} is not strong enough."
-                            )
                         matric = row.get("NO MATRIK")
+                        matric_value = str(matric).strip() if pd.notna(matric) else ""
+                        email_value = str(row.get("email", "")).strip().lower()
+                        password = (
+                            matric_value
+                            if role_value == "student"
+                            else str(row.get("temporary_password", ""))
+                        )
+                        if role_value == "student" and not matric_value:
+                            raise ValueError("Every student account requires NO MATRIK.")
+                        if role_value == "admin" and ("@" not in email_value or not valid_password(password)):
+                            raise ValueError(
+                                f"Admin {row['full_name']} requires a valid email and strong temporary password."
+                            )
+                        login_email = (
+                            email_value
+                            if email_value
+                            else f"{matric_value.lower()}@student.xplms.local"
+                        )
                         records.append({
-                            "email": str(row["email"]).strip().lower(),
+                            "email": login_email,
+                            "username": login_email if role_value == "admin" else matric_value,
                             "full_name": str(row["full_name"]).strip(),
                             "role": role_value,
                             "NO MATRIK": (
-                                str(matric).strip()
-                                if role_value == "student" and pd.notna(matric)
+                                matric_value
+                                if role_value == "student"
                                 else None
                             ),
                             "password_hash": hash_password(password),
                             "active": True,
-                            "must_change_password": True,
+                            "must_change_password": role_value == "admin",
                         })
                     client.table("app_users").upsert(
                         records, on_conflict="email"
@@ -2400,6 +2535,7 @@ def change_password_page() -> None:
                 client.table("app_users").update({
                     "password_hash": hash_password(password),
                     "must_change_password": False,
+                    "password_changed_at": datetime.now().isoformat(),
                 }).eq("id", st.session_state.user["id"]).execute()
                 st.session_state.user["must_change_password"] = False
                 st.success("Password updated.")
