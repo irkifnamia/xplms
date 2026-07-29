@@ -846,6 +846,13 @@ def mobile_navigation(role: str, current_page: str) -> str:
         st.session_state[mobile_key] = st.session_state[active_key]
     with st.container():
         st.markdown('<span class="mobile-nav-marker"></span>', unsafe_allow_html=True)
+        if st.button(
+            "SIGN OUT",
+            key=f"mobile_sign_out_{role.lower()}",
+            use_container_width=True,
+        ):
+            st.session_state.clear()
+            st.rerun()
         st.selectbox(
             "PAGE",
             menus[role],
