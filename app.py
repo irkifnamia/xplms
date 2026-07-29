@@ -2933,7 +2933,18 @@ def admin_crud_page() -> None:
                 except Exception as exc:
                     st.error(f"Record could not be deleted: {exc}")
     with bulk_tab:
-        st.warning("Bulk overwrite replaces every record in the selected dataset.")
+        bulk_mode = st.radio(
+            "Bulk operation",
+            ["Overwrite selected columns", "Replace entire dataset"],
+            horizontal=True,
+        )
+        if bulk_mode == "Overwrite selected columns":
+            st.info(
+                "Rows are matched by NO MATRIK. Only the columns you select "
+                "will be changed; all other database values remain unchanged."
+            )
+        else:
+            st.warning("Replace entire dataset deletes and recreates every record.")
         uploaded = st.file_uploader(
             "CSV or Excel file", type=["csv", "xlsx", "xls"], key="crud_bulk_file"
         )
@@ -2944,13 +2955,92 @@ def admin_crud_page() -> None:
                 else pd.read_excel(uploaded)
             )
             st.dataframe(frame.head(50), hide_index=True, width="stretch")
+            selected_columns: list[str] = []
+            if bulk_mode == "Overwrite selected columns":
+                if "NO MATRIK" not in frame.columns:
+                    st.error("The uploaded file must contain NO MATRIK.")
+                else:
+                    technical = {"id", "created_at", "updated_at", "NO MATRIK"}
+                    available_columns = [
+                        column for column in frame.columns
+                        if column not in technical
+                        and (data.empty or column in data.columns)
+                    ]
+                    ignored = [
+                        column for column in frame.columns
+                        if column not in technical and column not in available_columns
+                    ]
+                    if ignored:
+                        st.warning(
+                            "Columns not found in the selected dataset will be ignored: "
+                            + ", ".join(ignored)
+                        )
+                    selected_columns = st.multiselect(
+                        "Columns to overwrite",
+                        available_columns,
+                        default=available_columns,
+                    )
             confirmation = st.text_input("Type OVERWRITE to continue")
-            if st.button("Overwrite dataset", disabled=confirmation != "OVERWRITE"):
+            disabled = (
+                confirmation != "OVERWRITE"
+                or (
+                    bulk_mode == "Overwrite selected columns"
+                    and ("NO MATRIK" not in frame.columns or not selected_columns)
+                )
+            )
+            if st.button("Run bulk overwrite", disabled=disabled):
                 try:
-                    key = "NO MATRIK"
-                    db().table(target).delete().neq(key, "__never__").execute()
-                    ok, message = upsert_rows(target, frame)
-                    (st.success if ok else st.error)(message)
+                    client = db()
+                    if bulk_mode == "Replace entire dataset":
+                        client.table(target).delete().neq(
+                            "NO MATRIK", "__never__"
+                        ).execute()
+                        ok, message = upsert_rows(target, frame)
+                        (st.success if ok else st.error)(message)
+                    else:
+                        existing_matrics = (
+                            set(data["NO MATRIK"].dropna().astype(str))
+                            if "NO MATRIK" in data.columns else set()
+                        )
+                        updated = 0
+                        skipped = 0
+                        for _, row in frame.iterrows():
+                            matric = row.get("NO MATRIK")
+                            if pd.isna(matric) or not str(matric).strip():
+                                skipped += 1
+                                continue
+                            matric_value = str(matric).strip()
+                            if existing_matrics and matric_value not in existing_matrics:
+                                skipped += 1
+                                continue
+                            changes = {
+                                column: (
+                                    None
+                                    if pd.isna(row[column])
+                                    else (
+                                        row[column].item()
+                                        if hasattr(row[column], "item")
+                                        else row[column]
+                                    )
+                                )
+                                for column in selected_columns
+                            }
+                            result = client.table(target).update(changes).eq(
+                                "NO MATRIK", matric_value
+                            ).execute()
+                            if result.data:
+                                updated += 1
+                            else:
+                                skipped += 1
+                        st.success(
+                            f"{updated} records updated across "
+                            f"{len(selected_columns)} selected columns."
+                        )
+                        if skipped:
+                            st.warning(
+                                f"{skipped} rows were skipped because NO MATRIK "
+                                "was blank or not found in the selected dataset."
+                            )
                 except Exception as exc:
                     st.error(f"Overwrite stopped: {exc}")
     if not live:
