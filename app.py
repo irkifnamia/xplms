@@ -2172,8 +2172,18 @@ def quiz_page() -> None:
     live = materials_live and quizzes_live
 
     if live:
-        quizzes = quizzes[quizzes.get("status") == "published"].copy()
-        if quizzes.empty or materials.empty:
+        required_quiz_columns = {"id", "material_id", "status"}
+        required_material_columns = {"id", "chapter"}
+        if (
+            quizzes.empty
+            or materials.empty
+            or not required_quiz_columns.issubset(quizzes.columns)
+            or not required_material_columns.issubset(materials.columns)
+        ):
+            st.info("No published chapter question banks are available.")
+            return
+        quizzes = quizzes[quizzes["status"] == "published"].copy()
+        if quizzes.empty:
             st.info("No published chapter question banks are available.")
             return
         quiz_materials = quizzes.merge(
