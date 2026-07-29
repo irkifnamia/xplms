@@ -537,6 +537,25 @@ def fetch_table(name: str, fallback: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     return fallback.copy(), False
 
 
+def fetch_student_row(
+    name: str, matric: Any, fallback: pd.DataFrame
+) -> tuple[pd.DataFrame, bool]:
+    """Fetch one student's row instead of transferring the whole table."""
+    if is_demo():
+        return fallback.head(1).copy(), False
+    client = db()
+    if client and matric:
+        try:
+            rows = (
+                client.table(name).select("*")
+                .eq("NO MATRIK", str(matric)).limit(1).execute().data
+            )
+            return pd.DataFrame(rows), True
+        except Exception:
+            pass
+    return fallback.head(0).copy(), False
+
+
 def upsert_rows(name: str, frame: pd.DataFrame) -> tuple[bool, str]:
     if is_demo():
         return False, "Demo mode is read-only. No Supabase data was changed."
@@ -946,14 +965,10 @@ def merged_students() -> tuple[pd.DataFrame, bool]:
 
 def student_identity(user: dict[str, Any]) -> tuple[str, str]:
     """Return the student's preferred nickname and class."""
-    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
     matric = user.get("no_matrik")
-    if matric and "NO MATRIK" in background.columns:
-        matched = background[background["NO MATRIK"].astype(str) == str(matric)]
-    elif is_demo():
-        matched = background.head(1)
-    else:
-        matched = pd.DataFrame()
+    matched, _ = fetch_student_row(
+        "stud_background", matric, DEMO_STUDENTS
+    )
     if not matched.empty:
         row = matched.iloc[0]
         nickname = ""
@@ -1151,13 +1166,11 @@ def leaderboard_data(
 
 def progress_page() -> None:
     heading("", "Progress")
-    progress, _ = fetch_table("stud_progress", DEMO_PROGRESS)
     user = st.session_state.get("user", {})
-    if user.get("no_matrik") and "NO MATRIK" in progress.columns:
-        own = progress[progress["NO MATRIK"] == user["no_matrik"]]
-        row = own.iloc[0] if not own.empty else None
-    else:
-        row = progress.iloc[0] if not progress.empty else None
+    progress, _ = fetch_student_row(
+        "stud_progress", user.get("no_matrik"), DEMO_PROGRESS
+    )
+    row = progress.iloc[0] if not progress.empty else None
     if row is None:
         st.info("No progress record is linked to this account.")
         return
@@ -1276,15 +1289,11 @@ def _legacy_profile_page() -> None:
 
 def profile_page() -> None:
     heading("", "Profile")
-    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
     user = st.session_state.get("user", {})
-    if user.get("no_matrik") and "NO MATRIK" in background.columns:
-        own = background[
-            background["NO MATRIK"].astype(str) == str(user["no_matrik"])
-        ]
-        row = own.iloc[0] if not own.empty else None
-    else:
-        row = background.iloc[0] if not background.empty else None
+    background, _ = fetch_student_row(
+        "stud_background", user.get("no_matrik"), DEMO_STUDENTS
+    )
+    row = background.iloc[0] if not background.empty else None
 
     profile_tab, password_tab = st.tabs(["PROFILE", "CHANGE PASSWORD"])
     with profile_tab:
@@ -1640,11 +1649,12 @@ def request_xp_page() -> None:
 def my_xp_page() -> None:
     heading("", "My XP")
     user = st.session_state.get("user", {})
-    _, _, months, default_month = leaderboard_data()
+    individuals, _, months, default_month = leaderboard_data()
     selected_month = st.selectbox(
         "XP month", months, index=months.index(default_month),
     )
-    individuals, _, _, _ = leaderboard_data(selected_month)
+    if selected_month != default_month:
+        individuals, _, _, _ = leaderboard_data(selected_month)
     own = individuals[
         individuals["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
     ] if not individuals.empty else pd.DataFrame()
@@ -1719,15 +1729,25 @@ def my_xp_page() -> None:
 
 def student_leaderboard_page() -> None:
     heading("", "Leaderboard")
-    _, _, months, default_month = leaderboard_data()
+    individuals, classes, months, default_month = leaderboard_data()
     selected_month = st.selectbox(
         "XP month", months, index=months.index(default_month),
         key="leaderboard_xp_month",
     )
-    individuals, classes, _, _ = leaderboard_data(selected_month)
+    if selected_month != default_month:
+        individuals, classes, _, _ = leaderboard_data(selected_month)
+    class_options = (
+        sorted(individuals["Class"].dropna().astype(str).unique().tolist())
+        if not individuals.empty and "Class" in individuals.columns
+        else []
+    )
+    selected_class = st.selectbox(
+        "Kelas", ["ALL", *class_options], key="student_leaderboard_class"
+    )
     merged, _ = merged_students()
     excluded = {
-        "UPS 1", "UPS 2", "INDIVIDUAL ASSIGNMENT", "GROUP ASSIGNMENT"
+        "UPS 1", "UPS 2", "UPS 3",
+        "INDIVIDUAL ASSIGNMENT", "GROUP ASSIGNMENT",
     }
     assessments = [
         c for c in ASSESSMENT_COLUMNS
@@ -1741,10 +1761,21 @@ def student_leaderboard_page() -> None:
         progress_standings(assessment)
         if assessment else (pd.DataFrame(), pd.DataFrame())
     )
+    if selected_class != "ALL":
+        individuals = individuals[
+            individuals["Class"].astype(str) == selected_class
+        ]
+        classes = classes[classes["Class"].astype(str) == selected_class]
+        individual_progress = individual_progress[
+            individual_progress["Class"].astype(str) == selected_class
+        ]
+        class_progress = class_progress[
+            class_progress["Class"].astype(str) == selected_class
+        ]
 
     xp_individual, xp_class, progress_individual, progress_class = st.tabs([
-        "XP (INDIVIDUAL)", "XP (CLASS)",
-        "PROGRESS (INDIVIDUAL)", "PROGRESS (CLASS)",
+        "XP (IND)", "XP (CLASS)",
+        "PROGRESS (IND)", "PROGRESS (CLASS)",
     ])
     with xp_individual:
         if individuals.empty:
@@ -1764,8 +1795,7 @@ def student_leaderboard_page() -> None:
             st.dataframe(
                 classes[[
                     "Monthly Rank", "Overall Rank", "Class", "Students",
-                    "Monthly XP Average", "Monthly XP Total",
-                    "Overall XP Average", "Overall XP Total",
+                    "Monthly XP Average", "Overall XP Average",
                 ]].sort_values(["Monthly Rank", "Overall Rank", "Class"]),
                 hide_index=True, width="stretch",
             )
@@ -1784,7 +1814,6 @@ def student_leaderboard_page() -> None:
             st.dataframe(
                 class_progress[[
                     "Rank", "Class", "Students", "Average mark",
-                    "Results available",
                 ]],
                 hide_index=True, width="stretch",
             )
