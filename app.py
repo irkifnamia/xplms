@@ -270,6 +270,9 @@ button:disabled, button:disabled p, button:disabled span {
 
 /* A collapsed preference must never make desktop navigation disappear. */
 @media(min-width:701px){
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker) {
+    display:none !important;
+  }
   section[data-testid="stSidebar"] {
     display:block !important;
     visibility:visible !important;
@@ -340,8 +343,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
   [data-testid="stHeader"] {
     display:block !important;
     visibility:visible !important;
-    height:3.5rem !important;
-    min-height:3.5rem !important;
+    height:0 !important;
+    min-height:0 !important;
     background:transparent !important;
   }
   [data-testid="stHeader"] [data-testid="stToolbar"],
@@ -378,7 +381,7 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     fill:#17233a !important;
   }
   body:has(.student-sidebar-marker) .block-container {
-    padding:4rem 0.72rem 4.5rem !important;
+    padding:.8rem 0.72rem 4.5rem !important;
   }
   body:has(.student-sidebar-marker) .hero {
     padding:15px 16px;
@@ -425,7 +428,11 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     min-width:max-content;
   }
 
-  .block-container { padding:4rem .9rem 4.5rem; }
+  .block-container { padding:.8rem .9rem 4.5rem; }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.mobile-nav-marker) {
+    display:flex !important;
+    margin-bottom:.25rem;
+  }
   .hero { padding:20px; border-radius:17px; }
   .hero h1 { font-size:1.55rem; }
   .metric-value { font-size:1.4rem; }
@@ -692,6 +699,10 @@ def centered_image(path: Path, width: int, caption: str = "") -> None:
     )
 
 
+def sync_navigation(source_key: str, active_key: str) -> None:
+    st.session_state[active_key] = st.session_state[source_key]
+
+
 def sidebar(role: str, name: str) -> str:
     with st.sidebar:
         if role == "Student":
@@ -743,13 +754,55 @@ def sidebar(role: str, name: str) -> str:
             ],
         }
         labels = {item: item.upper() for items in menus.values() for item in items}
-        chosen = st.radio("Navigation", menus[role], format_func=lambda x: labels[x], label_visibility="collapsed")
+        active_key = f"active_page_{role.lower()}"
+        if st.session_state.get(active_key) not in menus[role]:
+            st.session_state[active_key] = menus[role][0]
+        sidebar_key = f"sidebar_page_{role.lower()}"
+        if st.session_state.get(sidebar_key) not in menus[role]:
+            st.session_state[sidebar_key] = st.session_state[active_key]
+        st.radio(
+            "Navigation",
+            menus[role],
+            format_func=lambda x: labels[x],
+            label_visibility="collapsed",
+            key=sidebar_key,
+            on_change=sync_navigation,
+            args=(sidebar_key, active_key),
+        )
         st.divider()
         centered_image(AFJ_LOGO_PATH, 62, "EMPOWERED BY")
         if st.button("Sign out", use_container_width=True):
             st.session_state.clear()
             st.rerun()
-    return chosen
+    return st.session_state[active_key]
+
+
+def mobile_navigation(role: str, current_page: str) -> str:
+    menus = {
+        "Student": ["Profile", "Materials", "Leaderboard", "Progress", "XP", "Quiz"],
+        "Admin": [
+            "User access", "CRUD", "Material", "Quiz", "Award XP",
+            "Student record", "Analysis background", "Analysis progress",
+            "Analysis XP", "Analysis material",
+        ],
+    }
+    active_key = f"active_page_{role.lower()}"
+    if st.session_state.get(active_key) not in menus[role]:
+        st.session_state[active_key] = current_page
+    mobile_key = f"mobile_page_{role.lower()}"
+    if st.session_state.get(mobile_key) not in menus[role]:
+        st.session_state[mobile_key] = st.session_state[active_key]
+    with st.container():
+        st.markdown('<span class="mobile-nav-marker"></span>', unsafe_allow_html=True)
+        st.selectbox(
+            "PAGE",
+            menus[role],
+            format_func=str.upper,
+            key=mobile_key,
+            on_change=sync_navigation,
+            args=(mobile_key, active_key),
+        )
+    return st.session_state[active_key]
 
 
 def login() -> None:
@@ -2902,6 +2955,7 @@ def main() -> None:
         role = "Student"
     display_name = student_nickname(user) if role == "Student" else user["name"]
     page = sidebar(role, display_name)
+    page = mobile_navigation(role, page)
     if role == "Student":
         {
             "Progress": progress_page,
