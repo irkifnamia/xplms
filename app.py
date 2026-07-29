@@ -856,7 +856,7 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Profile", "Materials", "My XP", "Leaderboard",
+                "Profile", "Materials", "My XP", "XP SOP", "Leaderboard",
                 "Results", "Request XP", "Quiz"
             ],
             "Admin": [
@@ -899,7 +899,7 @@ def sidebar(role: str, name: str) -> str:
 def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
-            "Profile", "Materials", "My XP", "Leaderboard",
+            "Profile", "Materials", "My XP", "XP SOP", "Leaderboard",
             "Results", "Request XP", "Quiz",
         ],
         "Admin": [
@@ -1731,6 +1731,47 @@ def request_xp_page() -> None:
             )
 
 
+def render_xp_sop() -> None:
+    sop = pd.DataFrame([
+        {
+            "XP event": "Consultation",
+            "Method": "Admin manual award / Student request → Admin approval",
+            "Points": "20 XP default",
+        },
+        {
+            "XP event": "Class participation",
+            "Method": "Admin manual award / Student request → Admin approval",
+            "Points": "10 XP default",
+        },
+        {
+            "XP event": "Commitment",
+            "Method": "Admin manual award / Student request → Admin approval",
+            "Points": "10 XP default",
+        },
+        {
+            "XP event": "Study group",
+            "Method": "Student request → Admin approval",
+            "Points": "15 XP default",
+        },
+        {
+            "XP event": "In-app quiz attempt",
+            "Method": "Automatic",
+            "Points": "5 XP per answered question",
+        },
+        {
+            "XP event": "Correct quiz answer",
+            "Method": "Automatic bonus",
+            "Points": "Additional 5 XP",
+        },
+    ])
+    st.dataframe(sop, hide_index=True, width="stretch")
+
+
+def xp_sop_page() -> None:
+    heading("", "XP SOP")
+    render_xp_sop()
+
+
 def my_xp_page() -> None:
     heading("", "My XP")
     user = st.session_state.get("user", {})
@@ -2483,13 +2524,7 @@ def award_xp_page() -> None:
         ["XP SOP", "MANUAL AWARD", "APPROVE REQUEST"]
     )
     with sop_tab:
-        st.markdown(
-            "- **Manual award:** consultation, class participation and commitment.\n"
-            "- **Positive XP:** recognises an eligible activity.\n"
-            "- **Negative XP:** records a justified correction or deduction; explain the reason clearly.\n"
-            "- **Student request:** consultation, class participation, commitment or study group.\n"
-            "- **Automatic XP:** awarded by the daily in-app quiz."
-        )
+        render_xp_sop()
 
     matric_col = next((c for c in ["NO MATRIK", "student_id"] if c in students.columns), None)
     name_col = next(
@@ -3465,6 +3500,7 @@ def main() -> None:
             "Materials": materials_page,
             "Quiz": quiz_page,
             "My XP": my_xp_page,
+            "XP SOP": xp_sop_page,
             "Leaderboard": student_leaderboard_page,
             "Profile": profile_page,
             "Request XP": request_xp_page,
