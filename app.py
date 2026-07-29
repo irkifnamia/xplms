@@ -45,7 +45,7 @@ class GeneratedQuiz(BaseModel):
     questions: list[GeneratedQuestion] = Field(min_length=1, max_length=20)
 
 
-LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.jpg"
+LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.png"
 LOGO_IMAGE = Image.open(LOGO_PATH)
 
 st.set_page_config(
@@ -1478,7 +1478,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                     "Chapter",
                     chapters,
                     default=chapters[0],
-                    format_func=lambda value: f"Chapter {value}",
+                    format_func=lambda value: f"C{value}",
                 )
                 material_type = st.segmented_control(
                     "Material type",
@@ -1533,7 +1533,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
             ["All", *chapters],
             default="All",
             format_func=lambda value: (
-                "All chapters" if value == "All" else f"Chapter {value}"
+                "All chapters" if value == "All" else f"C{value}"
             ),
             key=f"{'admin' if lecturer else 'student'}_material_chapter",
         )
@@ -1565,7 +1565,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
             c1, c2, c3, c4 = st.columns([5, 2.4, 1.2, 1.6])
             c1.markdown(f"**{item['title']}**  \n{item['course']}")
             c2.caption(
-                f"Chapter {item.get('chapter', '—')} · "
+                f"C{item.get('chapter', '—')} · "
                 f"{item.get('material_type', 'Other')} · {item.get('type', 'FILE')}"
             )
             if live and item.get("file_path"):
@@ -1619,7 +1619,7 @@ def admin_quiz_page() -> None:
     else:
         labels = {
             int(row["id"]): (
-                f"Chapter {row.get('chapter', '—')} · "
+                f"C{row.get('chapter', '—')} · "
                 f"{row.get('material_type', 'Other')} · {row['title']}"
             )
             for _, row in materials.iterrows()
@@ -1706,9 +1706,9 @@ def quiz_page() -> None:
         st.info("Published quizzes must be linked to materials with a chapter.")
         return
     chapter = st.selectbox(
-        "Chapter",
+        "Daily chapter quiz",
         chapters,
-        format_func=lambda value: f"Chapter {value}",
+        format_func=lambda value: f"C{value} · 10 questions today",
     )
 
     if live:
@@ -1733,7 +1733,7 @@ def quiz_page() -> None:
         if previous:
             result = previous[0]
             st.success(
-                f"Today's Chapter {chapter} quiz is complete · "
+                f"Today's C{chapter} quiz is complete · "
                 f"{int(result['correct_count'])}/{int(result['total_questions'])} correct · "
                 f"{int(result['xp_awarded'])} XP awarded."
             )
@@ -1768,7 +1768,7 @@ def quiz_page() -> None:
 
     if len(questions) < 10:
         st.info(
-            f"Chapter {chapter} currently has {len(questions)} questions. "
+            f"C{chapter} currently has {len(questions)} questions. "
             "An Admin must generate at least 10 before the daily quiz opens."
         )
         return
@@ -1779,7 +1779,7 @@ def quiz_page() -> None:
         pd.DataFrame(questions).sample(n=10, random_state=seed).to_dict("records")
     )
     st.caption(
-        "XP rule: 1 XP for an attempted question; a correct answer earns 2 XP instead."
+        "XP rule: 5 XP for every attempted answer, plus 5 XP for every correct answer."
     )
     with st.form(f"daily_quiz_{chapter}_{today}"):
         answers = {}
@@ -1805,7 +1805,7 @@ def quiz_page() -> None:
                 )
                 total_questions = len(daily_questions)
                 score = correct / total_questions * 100
-                xp_awarded = total_questions + correct
+                xp_awarded = (total_questions * 5) + (correct * 5)
                 if not live:
                     st.success(
                         f"Demo result: {correct}/10 correct · {xp_awarded} XP."
@@ -1831,7 +1831,7 @@ def quiz_page() -> None:
                             "points": xp_awarded,
                             "source_id": f"daily-quiz-{chapter}-{today}",
                             "reason": (
-                                f"Daily Chapter {chapter} quiz: "
+                                f"Daily C{chapter} quiz: "
                                 f"{correct}/{total_questions} correct"
                             ),
                             "award_mode": "automatic",
