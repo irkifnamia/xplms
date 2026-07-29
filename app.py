@@ -268,8 +268,124 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
 [role="listbox"], [role="option"] { background:#fff !important; }
 
 @media(max-width:700px){
-  .block-container { padding:1rem .9rem 4.5rem; } .hero { padding:20px; border-radius:17px; }
-  .hero h1 { font-size:1.55rem; } .metric-value { font-size:1.4rem; }
+  body:has(.student-sidebar-marker) .block-container {
+    padding:0.65rem 0.72rem 8.25rem !important;
+  }
+  body:has(.student-sidebar-marker) .hero {
+    padding:15px 16px;
+    margin-bottom:12px;
+    border-left-width:4px;
+    border-radius:13px;
+  }
+  body:has(.student-sidebar-marker) .hero h1 {
+    font-size:1.42rem;
+    line-height:1.18;
+  }
+  body:has(.student-sidebar-marker) .hero p {
+    font-size:.88rem;
+    line-height:1.4;
+  }
+  body:has(.student-sidebar-marker) .topline { font-size:.64rem; }
+  body:has(.student-sidebar-marker) .metric-card,
+  body:has(.student-sidebar-marker) .panel {
+    padding:13px 14px;
+    border-radius:13px;
+  }
+  body:has(.student-sidebar-marker) .metric-value { font-size:1.32rem; }
+  body:has(.student-sidebar-marker) [data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius:13px !important;
+  }
+  body:has(.student-sidebar-marker) [data-testid="stPlotlyChart"] {
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:13px;
+    overflow:hidden;
+  }
+  body:has(.student-sidebar-marker) [data-testid="stDataFrame"] {
+    font-size:.78rem;
+  }
+  body:has(.student-sidebar-marker) button {
+    min-height:2.75rem;
+    font-size:.88rem;
+  }
+  body:has(.student-sidebar-marker) [data-testid="stSegmentedControl"] {
+    overflow-x:auto;
+    scrollbar-width:none;
+  }
+  body:has(.student-sidebar-marker) [data-testid="stSegmentedControl"] > div {
+    min-width:max-content;
+  }
+
+  /* Student navigation becomes a thumb-friendly fixed bottom bar. */
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker) {
+    display:block !important;
+    position:fixed !important;
+    inset:auto 0 0 0 !important;
+    width:100vw !important;
+    min-width:100vw !important;
+    height:auto !important;
+    z-index:999999 !important;
+    transform:none !important;
+    border:0 !important;
+    border-top:1px solid #cbd6e2 !important;
+    box-shadow:0 -6px 20px rgba(23,35,58,.12);
+  }
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
+  [data-testid="stSidebarContent"] {
+    padding:.38rem .45rem .45rem !important;
+    background:#fff !important;
+  }
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
+  [data-testid="stSidebarContent"] > div > div > div > :is(
+    [data-testid="stImage"],
+    [data-testid="stCaptionContainer"],
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stSelectbox"],
+    [data-testid="stDivider"]
+  ) { display:none !important; }
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
+  [data-testid="stRadio"] [role="radiogroup"] {
+    display:flex !important;
+    flex-direction:row !important;
+    gap:2px !important;
+    width:100% !important;
+  }
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
+  [data-testid="stRadio"] label {
+    flex:1 1 20%;
+    min-width:0;
+    min-height:48px;
+    margin:0 !important;
+    padding:.36rem .12rem !important;
+    display:flex !important;
+    justify-content:center;
+    text-align:center;
+    line-height:1.12;
+    font-size:.69rem;
+  }
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
+  [data-testid="stRadio"] label > div:first-child {
+    display:none !important;
+  }
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
+  [data-testid="stRadio"] label:has(input:checked) {
+    background:#e8f1fc !important;
+    color:#154b8c !important;
+  }
+  section[data-testid="stSidebar"]:has(.student-sidebar-marker)
+  .stButton > button {
+    min-height:2rem !important;
+    margin-top:.2rem;
+    font-size:.72rem;
+  }
+  [data-testid="collapsedControl"]:has(+ section .student-sidebar-marker) {
+    display:none !important;
+  }
+
+  .block-container { padding:1rem .9rem 4.5rem; }
+  .hero { padding:20px; border-radius:17px; }
+  .hero h1 { font-size:1.55rem; }
+  .metric-value { font-size:1.4rem; }
 }
 </style>
 """
@@ -294,11 +410,10 @@ DEMO_PROGRESS = pd.DataFrame(
         {"student_id": "S24005", "assignment": 88, "pb": 85, "task": 91, "xp": 2530, "badge": 9},
     ]
 )
-DEMO_MATERIALS = pd.DataFrame(
-    [
-        {"title": "Week 6 · User research methods", "course": "HCI 2204", "type": "PDF", "uploaded_at": "2026-07-27"},
-        {"title": "SQL joins quick guide", "course": "DBS 2103", "type": "PDF", "uploaded_at": "2026-07-24"},
-        {"title": "Pandas practice notebook", "course": "PRG 1202", "type": "Notebook", "uploaded_at": "2026-07-21"},
+EMPTY_MATERIALS = pd.DataFrame(
+    columns=[
+        "id", "title", "course", "chapter", "material_type", "type",
+        "file_path", "uploaded_at",
     ]
 )
 
@@ -501,6 +616,8 @@ def heading(eyebrow: str, title: str, copy: str = "") -> None:
 
 def sidebar(role: str, name: str) -> str:
     with st.sidebar:
+        if role == "Student":
+            st.markdown('<span class="student-sidebar-marker"></span>', unsafe_allow_html=True)
         st.image(LOGO_IMAGE, width=112)
         st.caption("Experience-led learning")
         st.markdown(
@@ -688,25 +805,37 @@ def progress_page() -> None:
     for column in score_columns:
         value = pd.to_numeric(pd.Series([row[column]]), errors="coerce").iloc[0]
         zone_column = f"{column}_ZONE"
+        mark = None if pd.isna(value) else float(value)
         results.append({
             "Component": column.replace("_", " "),
-            "Mark": None if pd.isna(value) else float(value),
+            "Mark": mark,
             "Zone": row.get(zone_column, "—") if not pd.isna(row.get(zone_column, None)) else "—",
+            "Status": "Available" if mark is not None else "Pending",
         })
     completed = [item["Mark"] for item in results if item["Mark"] is not None]
     a, b, c = st.columns(3)
     with a: metric("Results available", str(len(completed)), f"of {len(results)} components")
     with b: metric("Current average", f"{sum(completed)/len(completed):.1f}" if completed else "—", "Based on available marks")
     with c: metric("Matric number", str(row.get("NO MATRIK", user.get("no_matrik", "—"))), "Student identifier")
-    chart = pd.DataFrame([item for item in results if item["Mark"] is not None])
-    if chart.empty:
+
+    st.subheader("Assessment results")
+    if not completed:
         st.info("Marks have not been published yet.")
-        return
-    fig = px.bar(chart, x="Component", y="Mark", range_y=[0, 100], color_discrete_sequence=[BRAND], text_auto=True)
-    fig.update_layout(height=330, margin=dict(l=10, r=10, t=25, b=5), plot_bgcolor="white", paper_bgcolor="white", yaxis_title="Mark", xaxis_title=None)
-    polish_chart(fig)
-    st.plotly_chart(fig, width="stretch")
-    st.dataframe(pd.DataFrame(results), hide_index=True, width="stretch")
+    results_table = pd.DataFrame(results)
+    results_table["Mark"] = results_table["Mark"].apply(
+        lambda value: "—" if pd.isna(value) else f"{float(value):.1f}"
+    )
+    st.dataframe(
+        results_table,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Component": st.column_config.TextColumn("Assessment", width="large"),
+            "Mark": st.column_config.TextColumn("Mark", width="small"),
+            "Zone": st.column_config.TextColumn("Zone", width="medium"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+        },
+    )
 
 
 def profile_page() -> None:
@@ -843,40 +972,140 @@ def xp_badge_page() -> None:
 
 
 def materials_page(lecturer: bool = False) -> None:
-    heading("Knowledge library", "Study materials", "Everything your class needs, organised by course.")
-    materials, live = fetch_table("materials", DEMO_MATERIALS)
+    heading(
+        "Knowledge library",
+        "Study materials",
+        "Browse learning resources by chapter and material type.",
+    )
+    materials, live = fetch_table("materials", EMPTY_MATERIALS)
+    chapters = [1, 2, 5, 8, 9, 10]
+    material_types = ["Infographic", "Notes", "Exercise", "Extra", "Reference", "Other"]
+
     if lecturer:
-        with st.expander("＋ Upload new material"):
+        with st.expander("Upload new material"):
             with st.form("material_upload"):
                 title = st.text_input("Resource title")
-                course = st.text_input("Course code")
+                course = st.text_input("Course or subject", value="Mathematics")
+                chapter = st.segmented_control(
+                    "Chapter",
+                    chapters,
+                    default=chapters[0],
+                    format_func=lambda value: f"Chapter {value}",
+                )
+                material_type = st.segmented_control(
+                    "Material type",
+                    material_types,
+                    default=material_types[0],
+                )
                 file = st.file_uploader("File", type=["pdf", "docx", "pptx", "xlsx", "txt", "md", "csv", "zip"])
                 if st.form_submit_button("Share with students", type="primary"):
-                    if not file:
+                    if not title.strip():
+                        st.error("Enter a resource title.")
+                    elif not file:
                         st.error("Choose a file.")
                     else:
-                        ok, path = upload_file("materials", f"{course}/{datetime.now().timestamp()}-{file.name}", file.getvalue(), file.type)
-                        if ok:
-                            upsert_rows("materials", pd.DataFrame([{"title": title, "course": course, "file_path": path, "type": file.name.rsplit(".", 1)[-1].upper()}]))
-                            st.success("Material shared.")
-                        else: st.error(path)
-    query = st.text_input("Search library", placeholder="Search by title or course…")
+                        client = db()
+                        try:
+                            client.table("materials").select("chapter,material_type").limit(1).execute()
+                        except Exception:
+                            st.error("Run supabase_migration_005_material_classification.sql before uploading materials.")
+                        else:
+                            storage_path = (
+                                f"chapter-{chapter}/{material_type.lower()}/"
+                                f"{datetime.now().timestamp()}-{file.name}"
+                            )
+                            ok, path = upload_file(
+                                "materials", storage_path, file.getvalue(), file.type
+                            )
+                            if ok:
+                                saved, message = upsert_rows(
+                                    "materials",
+                                    pd.DataFrame([{
+                                        "title": title.strip(),
+                                        "course": course.strip() or "Mathematics",
+                                        "chapter": int(chapter),
+                                        "material_type": material_type,
+                                        "file_path": path,
+                                        "type": file.name.rsplit(".", 1)[-1].upper(),
+                                        "lecturer_id": st.session_state.user["id"],
+                                    }]),
+                                )
+                                if saved:
+                                    st.success("Material shared with students.")
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                            else:
+                                st.error(path)
+
+    filter_a, filter_b = st.columns(2)
+    with filter_a:
+        chapter_filter = st.segmented_control(
+            "Chapter",
+            ["All", *chapters],
+            default="All",
+            format_func=lambda value: (
+                "All chapters" if value == "All" else f"Chapter {value}"
+            ),
+            key=f"{'admin' if lecturer else 'student'}_material_chapter",
+        )
+    with filter_b:
+        type_filter = st.selectbox(
+            "Material type",
+            ["All types", *material_types],
+            key=f"{'admin' if lecturer else 'student'}_material_type",
+        )
+
+    query = st.text_input("Search materials", placeholder="Search by title, subject or type…")
     if query:
         materials = materials[materials.astype(str).apply(lambda row: row.str.contains(query, case=False).any(), axis=1)]
+    if chapter_filter != "All" and "chapter" in materials.columns:
+        chapter_values = pd.to_numeric(materials["chapter"], errors="coerce")
+        materials = materials[chapter_values == int(chapter_filter)]
+    if type_filter != "All types" and "material_type" in materials.columns:
+        materials = materials[materials["material_type"] == type_filter]
+
     question_count = 5
     if lecturer:
         question_count = st.number_input("Questions per generated quiz", 3, 15, 5)
+
+    if materials.empty:
+        st.info(
+            "No materials have been uploaded yet."
+            if not query and chapter_filter == "All" and type_filter == "All types"
+            else "No materials match the selected filters."
+        )
+
     for i, item in materials.iterrows():
         with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([5, 2, 1.2, 1.6])
+            c1, c2, c3, c4 = st.columns([5, 2.4, 1.2, 1.6])
             c1.markdown(f"**{item['title']}**  \n{item['course']}")
-            c2.caption(f"{item.get('type', 'FILE')} · {item.get('uploaded_at', 'Recently')}")
-            c3.button("Download", key=f"material_{i}", use_container_width=True)
+            c2.caption(
+                f"Chapter {item.get('chapter', '—')} · "
+                f"{item.get('material_type', 'Other')} · {item.get('type', 'FILE')}"
+            )
+            if live and item.get("file_path"):
+                try:
+                    file_data = db().storage.from_("materials").download(str(item["file_path"]))
+                    c3.download_button(
+                        "Download",
+                        data=file_data,
+                        file_name=str(item["file_path"]).rsplit("/", 1)[-1],
+                        key=f"material_{i}",
+                        width="stretch",
+                    )
+                except Exception:
+                    c3.button(
+                        "Unavailable",
+                        key=f"material_{i}",
+                        disabled=True,
+                        width="stretch",
+                    )
             if lecturer and live and item.get("file_path") and c4.button("Generate quiz", key=f"quiz_material_{i}"):
                 with st.spinner("Generating a draft quiz from this material…"):
                     ok, message = generate_material_quiz(item, int(question_count))
                 (st.success if ok else st.error)(message)
-    if not live: st.caption("Showing sample resources.")
+
     if lecturer:
         st.subheader("Quiz management")
         quizzes, quiz_live = fetch_table("quizzes", pd.DataFrame())
