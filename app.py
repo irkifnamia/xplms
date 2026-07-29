@@ -697,7 +697,6 @@ def sidebar(role: str, name: str) -> str:
         if role == "Student":
             st.markdown('<span class="student-sidebar-marker"></span>', unsafe_allow_html=True)
         centered_image(LOGO_PATH, 112)
-        st.caption("Experience-led learning")
         st.markdown(
             f'<div class="userbox"><b>{name}</b><br><small>{role} workspace</small></div>',
             unsafe_allow_html=True,
@@ -2700,6 +2699,29 @@ def user_access_page() -> None:
             "Upload CSV or Excel with: full_name, role, NO MATRIK, email and "
             "temporary_password. Student email/password may be blank; NO MATRIK "
             "becomes both the default username and password."
+        )
+        template = pd.DataFrame([
+            {
+                "full_name": "Admin Name",
+                "role": "admin",
+                "NO MATRIK": "",
+                "email": "admin@institution.edu",
+                "temporary_password": "ChangeMe123",
+            },
+            {
+                "full_name": "Student Name",
+                "role": "student",
+                "NO MATRIK": "MS00000000",
+                "email": "",
+                "temporary_password": "",
+            },
+        ])
+        st.download_button(
+            "Download CSV template",
+            data=template.to_csv(index=False).encode("utf-8-sig"),
+            file_name="xplms_user_access_template.csv",
+            mime="text/csv",
+            key="user_access_csv_template",
         )
         upload = st.file_uploader(
             "User access file",
