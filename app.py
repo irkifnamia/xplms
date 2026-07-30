@@ -2007,6 +2007,18 @@ def my_xp_page() -> None:
         own = individuals.head(1)
     row = own.iloc[0] if not own.empty else None
     current_xp = int(row["Overall XP"]) if row is not None else 0
+    if row is None:
+        xp_record, _ = fetch_student_row(
+            "stud_xp",
+            user.get("no_matrik"),
+            pd.DataFrame(columns=["NO MATRIK", "XP"]),
+        )
+        if not xp_record.empty:
+            xp_value = xp_record.iloc[0].get(
+                "XP", xp_record.iloc[0].get("xp", 0)
+            )
+            numeric_xp = pd.to_numeric(xp_value, errors="coerce")
+            current_xp = int(numeric_xp) if pd.notna(numeric_xp) else 0
     history, history_live = fetch_table("xp_events", pd.DataFrame())
     if history_live and "NO MATRIK" in history.columns:
         history = history[
@@ -2019,6 +2031,21 @@ def my_xp_page() -> None:
             earned["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
         ]
     current_streak = int(row.get("Current Streak", 0)) if row is not None else 0
+    if row is None:
+        streaks, _ = streak_summary()
+        if not streaks.empty and "NO MATRIK" in streaks.columns:
+            own_streak = streaks[
+                streaks["NO MATRIK"].astype(str)
+                == str(user.get("no_matrik"))
+            ]
+            if not own_streak.empty:
+                streak_value = pd.to_numeric(
+                    own_streak.iloc[0].get("current_streak", 0),
+                    errors="coerce",
+                )
+                current_streak = (
+                    int(streak_value) if pd.notna(streak_value) else 0
+                )
     if earned_live and not earned.empty:
         if "badge_family" in earned.columns:
             xp_names = set(
@@ -2073,38 +2100,35 @@ def my_xp_page() -> None:
                 hide_index=True, width="stretch",
             )
     with xp_tab:
-        if row is None:
-            st.info("XP journey is not available.")
-        else:
-            captured_xp = [
+        captured_xp = [
+            (threshold, badge) for threshold, badge in BADGE_LEVELS
+            if badge in xp_names
+        ]
+        current_badge = captured_xp[-1][1] if captured_xp else "None"
+        next_xp = next(
+            (
                 (threshold, badge) for threshold, badge in BADGE_LEVELS
-                if badge in xp_names
-            ]
-            current_badge = captured_xp[-1][1] if captured_xp else "None"
-            next_xp = next(
+                if badge not in xp_names
+            ),
+            None,
+        )
+        a, b, c = st.columns(3)
+        with a: metric("Current XP", f"{current_xp:,}")
+        with b: metric("Current XP badge", current_badge)
+        with c:
+            metric(
+                "Next XP badge",
                 (
-                    (threshold, badge) for threshold, badge in BADGE_LEVELS
-                    if badge not in xp_names
+                    f"{max(0, next_xp[0] - current_xp):,} XP"
+                    if next_xp else "Complete"
                 ),
-                None,
+                next_xp[1] if next_xp else "All levels captured",
             )
-            a, b, c = st.columns(3)
-            with a: metric("Current XP", f"{current_xp:,}")
-            with b: metric("Current XP badge", current_badge)
-            with c:
-                metric(
-                    "Next XP badge",
-                    (
-                        f"{max(0, next_xp[0] - current_xp):,} XP"
-                        if next_xp else "Complete"
-                    ),
-                    next_xp[1] if next_xp else "All levels captured",
-                )
-            st.subheader("XP badge checklist")
-            st.dataframe(
-                badge_checklist(BADGE_LEVELS, xp_names, "XP"),
-                hide_index=True, width="stretch",
-            )
+        st.subheader("XP badge checklist")
+        st.dataframe(
+            badge_checklist(BADGE_LEVELS, xp_names, "XP"),
+            hide_index=True, width="stretch",
+        )
     with streak_tab:
         captured_streak = [
             (threshold, badge) for threshold, badge in STREAK_BADGE_LEVELS
