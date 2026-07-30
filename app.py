@@ -870,7 +870,6 @@ def sidebar(role: str, name: str) -> str:
                 "Analysis background",
                 "Analysis results",
                 "Analysis XP",
-                "Analysis material",
             ],
         }
         labels = {item: item.upper() for items in menus.values() for item in items}
@@ -906,7 +905,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
         "Admin": [
             "User access", "CRUD", "Material", "Quiz", "Award XP",
             "Student record", "Analysis background", "Analysis results",
-            "Analysis XP", "Analysis material",
+            "Analysis XP",
         ],
     }
     active_key = f"active_page_{role.lower()}"
@@ -2062,6 +2061,68 @@ def student_leaderboard_page() -> None:
             )
 
 
+def render_admin_material_view(
+    materials: pd.DataFrame,
+    live: bool,
+    chapters: list[int],
+    material_types: list[str],
+) -> None:
+    filter_a, filter_b = st.columns(2)
+    with filter_a:
+        chapter_filter = st.segmented_control(
+            "Chapter", ["All", *chapters], default="All",
+            format_func=lambda value: "ALL" if value == "All" else f"C{value}",
+            key="admin_view_material_chapter",
+        )
+    with filter_b:
+        type_filter = st.selectbox(
+            "Material type", ["All types", *material_types],
+            key="admin_view_material_type",
+        )
+    query = st.text_input(
+        "Search materials", placeholder="Search by title, subject or type…",
+        key="admin_view_material_search",
+    )
+    shown = materials.copy()
+    if query:
+        shown = shown[
+            shown.astype(str).apply(
+                lambda row: row.str.contains(query, case=False).any(), axis=1
+            )
+        ]
+    if chapter_filter != "All" and "chapter" in shown.columns:
+        shown = shown[
+            pd.to_numeric(shown["chapter"], errors="coerce") == int(chapter_filter)
+        ]
+    if type_filter != "All types" and "material_type" in shown.columns:
+        shown = shown[shown["material_type"] == type_filter]
+    if shown.empty:
+        st.info("No materials match the selected filters.")
+        return
+    for index, item in shown.iterrows():
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([5, 2.4, 1.4])
+            c1.markdown(f"**{item['title']}**  \n{item['course']}")
+            c2.caption(
+                f"C{item.get('chapter', '—')} · "
+                f"{item.get('material_type', 'Other')} · {item.get('type', 'FILE')}"
+            )
+            if live and item.get("file_path"):
+                try:
+                    signed = db().storage.from_("materials").create_signed_url(
+                        str(item["file_path"]), 600
+                    )
+                    url = signed.get("signedURL") or signed.get("signedUrl")
+                    if not url:
+                        raise ValueError("No signed URL returned.")
+                    c3.link_button("View", url, width="stretch")
+                except Exception:
+                    c3.button(
+                        "Unavailable", key=f"admin_view_material_{index}",
+                        disabled=True, width="stretch",
+                    )
+
+
 def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
     heading(
         "Knowledge library",
@@ -2073,7 +2134,11 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
     material_types = ["Infographic", "Notes", "Exercise", "Extra", "Reference", "Other"]
 
     if lecturer:
-        upload_tab, manage_tab = st.tabs(["UPLOAD", "EDIT & DELETE"])
+        view_tab, upload_tab, manage_tab = st.tabs(["VIEW", "UPLOAD", "EDIT & DELETE"])
+        with view_tab:
+            render_admin_material_view(
+                materials, live, chapters, material_types
+            )
         with upload_tab:
             with st.form("material_upload"):
                 title = st.text_input("Resource title")
@@ -2177,6 +2242,24 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                     key="manage_material_id",
                 )
                 selected = materials[materials["id"] == selected_id].iloc[0]
+                st.markdown(
+                    f"**{selected.get('title', 'Untitled')}**  \n"
+                    f"C{selected.get('chapter', '—')} · "
+                    f"{selected.get('material_type', 'Other')} · "
+                    f"{selected.get('type', 'FILE')}"
+                )
+                if live and selected.get("file_path"):
+                    try:
+                        signed = db().storage.from_("materials").create_signed_url(
+                            str(selected["file_path"]), 600
+                        )
+                        selected_url = (
+                            signed.get("signedURL") or signed.get("signedUrl")
+                        )
+                        if selected_url:
+                            st.link_button("View selected file", selected_url)
+                    except Exception:
+                        st.warning("The selected file is currently unavailable.")
                 with st.form("edit_material"):
                     edited_title = st.text_input(
                         "Resource title", value=str(selected.get("title", ""))
@@ -2240,6 +2323,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                             st.rerun()
                         except Exception as exc:
                             st.error(f"Material could not be deleted: {exc}")
+        return
 
     filter_a, filter_b = st.columns(2)
     with filter_a:
@@ -2772,14 +2856,39 @@ def award_xp_page() -> None:
         (c for c in ["NICKNAME PELAJAR", "NAMA PELAJAR", "name", "student_name"] if c in students.columns),
         None,
     )
+    class_col = next(
+        (c for c in ["KELAS", "CLASS", "class", "cohort"] if c in students.columns),
+        None,
+    )
+    identity_columns = [
+        column for column in [matric_col, name_col, class_col] if column
+    ]
     choices = (
-        students[[matric_col] + ([name_col] if name_col else [])].drop_duplicates()
+        students[identity_columns].drop_duplicates(subset=[matric_col])
         if matric_col and not students.empty else pd.DataFrame()
     )
-    labels = {
-        str(row[matric_col]): (
-            f"{row[name_col]} · {row[matric_col]}" if name_col else str(row[matric_col])
+
+    def identity_label(matric: Any) -> str:
+        matric_text = str(matric)
+        matched = (
+            choices[choices[matric_col].astype(str) == matric_text]
+            if matric_col and not choices.empty else pd.DataFrame()
         )
+        if matched.empty:
+            return f"UNKNOWN · UNASSIGNED · {matric_text}"
+        row = matched.iloc[0]
+        student_name = (
+            str(row.get(name_col)).strip()
+            if name_col and pd.notna(row.get(name_col)) else "UNKNOWN"
+        )
+        student_class = (
+            str(row.get(class_col)).strip()
+            if class_col and pd.notna(row.get(class_col)) else "UNASSIGNED"
+        )
+        return f"{student_name} · {student_class} · {matric_text}"
+
+    labels = {
+        str(row[matric_col]): identity_label(row[matric_col])
         for _, row in choices.iterrows()
     }
     rule_lookup = {
@@ -2840,7 +2949,10 @@ def award_xp_page() -> None:
             client = db()
             for _, claim in claims.iterrows():
                 label = str(claim.get("claim_type", "study_group")).replace("_", " ").title()
-                with st.expander(f"{label} · {claim.get('title', 'XP request')} · {claim.get('NO MATRIK', '')}"):
+                with st.expander(
+                    f"{label} · {claim.get('title', 'XP request')} · "
+                    f"{identity_label(claim.get('NO MATRIK', ''))}"
+                ):
                     st.write(claim.get("description", ""))
                     proof_path = claim.get("proof_path")
                     if claims_live and proof_path:
@@ -2904,7 +3016,7 @@ def award_xp_page() -> None:
 
             event_labels = {
                 row["id"]: (
-                    f"{row.get('NO MATRIK', '')} · "
+                    f"{identity_label(row.get('NO MATRIK', ''))} · "
                     f"{str(row.get('rule_code', '')).replace('_', ' ').title()} · "
                     f"{event_points(row.get('points')):+d} XP"
                 )
@@ -3194,36 +3306,6 @@ def analysis_xp_page() -> None:
             ]
         ]
         st.dataframe(overall_classes, hide_index=True, width="stretch")
-
-
-def analysis_material_page() -> None:
-    heading(
-        "Library intelligence",
-        "Analysis material",
-        "Analyse uploaded materials by chapter and resource type.",
-    )
-    materials, _ = fetch_table("materials", EMPTY_MATERIALS)
-    if materials.empty:
-        st.info("No materials have been uploaded yet.")
-        return
-    a, b, c = st.columns(3)
-    with a: metric("Materials", str(len(materials)), "Uploaded resources")
-    with b: metric("Chapters", str(materials.get("chapter", pd.Series()).nunique()), "With resources")
-    with c: metric("Types", str(materials.get("material_type", pd.Series()).nunique()), "Resource classifications")
-    if {"chapter", "material_type"}.issubset(materials.columns):
-        summary = (
-            materials.groupby(["chapter", "material_type"], dropna=False)
-            .size().reset_index(name="Materials")
-            .sort_values(["chapter", "material_type"])
-        )
-        st.dataframe(summary, hide_index=True, width="stretch")
-    st.subheader("Material register")
-    visible = [
-        column for column in
-        ["title", "course", "chapter", "material_type", "type", "uploaded_at"]
-        if column in materials.columns
-    ]
-    st.dataframe(materials[visible], hide_index=True, width="stretch")
 
 
 def admin_crud_page() -> None:
@@ -3829,7 +3911,6 @@ def main() -> None:
             "Analysis background": analysis_background_page,
             "Analysis results": analysis_progress_page,
             "Analysis XP": analysis_xp_page,
-            "Analysis material": analysis_material_page,
             "CRUD": admin_crud_page,
             "Award XP": award_xp_page,
             "User access": user_access_page,
