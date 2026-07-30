@@ -158,15 +158,84 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
 [data-testid="stSidebar"] [data-baseweb="select"] svg { fill:#171717; }
 .block-container { max-width:1440px; padding:1.8rem 2.2rem 4rem; }
 .topline { color:var(--brand); font-weight:700; text-transform:uppercase; letter-spacing:.12em; font-size:.72rem; }
-.hero { background:linear-gradient(120deg,#fff 0%,#f4f9ff 58%,#e9f9f7 100%); color:#17233a;
-  border:1px solid #dbe3ec; border-left:6px solid var(--brand); border-radius:18px;
-  padding:26px 30px; margin-bottom:20px; box-shadow:0 10px 28px rgba(31,93,170,.09); position:relative; overflow:hidden; }
-.hero:after { content:""; position:absolute; width:120px; height:120px; border-radius:50%; right:-35px; top:-45px; background:rgba(242,169,0,.16); }
-.hero-inner { display:flex; align-items:center; justify-content:space-between; gap:20px; position:relative; z-index:1; }
-.hero-brand { flex:0 0 auto; text-align:center; min-width:105px; }
-.hero-brand img { display:block; width:72px; height:72px; object-fit:contain; margin:0 auto 3px; }
-.hero-identity { color:#40516a; font-size:.68rem; font-weight:800; letter-spacing:.055em; white-space:nowrap; }
-.hero h1 { color:#17233a; margin:.2rem 0 .35rem; font-size:2.15rem; }
+.hero {
+  background:
+    linear-gradient(118deg,rgba(255,255,255,.98) 0%,rgba(246,250,255,.98) 62%,rgba(235,247,250,.98) 100%);
+  color:var(--ink);
+  border:1px solid #cbd9e8;
+  border-radius:16px;
+  padding:20px 24px;
+  margin-bottom:20px;
+  box-shadow:0 8px 24px rgba(31,93,170,.08);
+  position:relative;
+  overflow:hidden;
+}
+.hero:before {
+  content:"";
+  position:absolute;
+  left:0;
+  top:18px;
+  bottom:18px;
+  width:4px;
+  border-radius:0 6px 6px 0;
+  background:linear-gradient(180deg,var(--brand),var(--cyan));
+}
+.hero:after {
+  content:"";
+  position:absolute;
+  width:190px;
+  height:190px;
+  border-radius:50%;
+  right:-86px;
+  top:-108px;
+  background:radial-gradient(circle,rgba(18,169,196,.11),rgba(31,93,170,.035) 56%,transparent 58%);
+}
+.hero-inner {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:24px;
+  position:relative;
+  z-index:1;
+}
+.hero-title { display:flex; align-items:center; min-width:0; }
+.hero-title:before {
+  content:"";
+  width:9px;
+  height:34px;
+  flex:0 0 auto;
+  margin-right:16px;
+  border-radius:999px;
+  background:linear-gradient(180deg,var(--brand),var(--cyan));
+  box-shadow:0 0 0 5px rgba(31,93,170,.07);
+}
+.hero-brand {
+  flex:0 0 auto;
+  text-align:center;
+  min-width:98px;
+  padding:7px 10px 6px;
+  border:1px solid rgba(31,93,170,.13);
+  border-radius:13px;
+  background:rgba(255,255,255,.72);
+  box-shadow:0 4px 14px rgba(23,35,58,.055);
+  backdrop-filter:blur(5px);
+}
+.hero-brand img { display:block; width:54px; height:54px; object-fit:contain; margin:0 auto 2px; }
+.hero-identity {
+  color:#40516a;
+  font-size:.65rem;
+  font-weight:800;
+  letter-spacing:.045em;
+  white-space:nowrap;
+}
+.hero h1 {
+  color:var(--ink);
+  margin:0;
+  font-size:1.72rem;
+  line-height:1.12;
+  font-weight:800;
+  letter-spacing:-.045em;
+}
 .hero p { color:#536174 !important; margin:0; }
 .metric-card,.panel { background:linear-gradient(145deg,#fff,#f8fbff); border:1px solid var(--line); border-top:4px solid var(--brand); border-radius:18px; padding:18px 20px;
   box-shadow:0 4px 14px rgba(0,0,0,.045); }
@@ -401,10 +470,22 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
   body:has(.student-sidebar-marker) .block-container {
     padding:.35rem 0.72rem 4.5rem !important;
   }
+  .hero {
+    padding:13px 14px;
+    margin-bottom:12px;
+    border-radius:13px;
+  }
+  .hero:before { top:12px; bottom:12px; width:3px; }
+  .hero-title:before {
+    width:6px;
+    height:27px;
+    margin-right:11px;
+    box-shadow:0 0 0 4px rgba(31,93,170,.06);
+  }
+  .hero h1 { font-size:1.3rem; line-height:1.15; }
   body:has(.student-sidebar-marker) .hero {
     padding:15px 16px;
     margin-bottom:12px;
-    border-left-width:4px;
     border-radius:13px;
   }
   body:has(.student-sidebar-marker) .hero h1 {
@@ -412,8 +493,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     line-height:1.18;
   }
   .hero-inner { gap:10px; }
-  .hero-brand { min-width:82px; }
-  .hero-brand img { width:54px; height:54px; }
+  .hero-brand { min-width:78px; padding:5px 7px 4px; border-radius:11px; }
+  .hero-brand img { width:46px; height:46px; }
   .hero-identity { font-size:.58rem; max-width:110px; overflow:hidden; text-overflow:ellipsis; }
   body:has(.student-sidebar-marker) .hero p {
     font-size:.88rem;
@@ -791,7 +872,7 @@ def heading(eyebrow: str, title: str, copy: str = "") -> None:
     identity = html.escape(str(st.session_state.get("header_identity", "")))
     st.markdown(
         f'<div class="hero"><div class="hero-inner">'
-        f'<h1>{html.escape(title.upper())}</h1>'
+        f'<div class="hero-title"><h1>{html.escape(title.upper())}</h1></div>'
         f'<div class="hero-brand"><img src="data:image/png;base64,{LOGO_DATA}" '
         f'alt="XPLMS"><div class="hero-identity">{identity}</div></div>'
         f'</div></div>',
