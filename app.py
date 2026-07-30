@@ -866,6 +866,7 @@ def sidebar(role: str, name: str) -> str:
                 "Material",
                 "Quiz",
                 "Award XP",
+                "SOP",
                 "Student record",
                 "Analysis background",
                 "Analysis results",
@@ -903,7 +904,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
             "Results", "Request XP", "Quiz",
         ],
         "Admin": [
-            "User access", "CRUD", "Material", "Quiz", "Award XP",
+            "User access", "CRUD", "Material", "Quiz", "Award XP", "SOP",
             "Student record", "Analysis background", "Analysis results",
             "Analysis XP",
         ],
@@ -3031,16 +3032,11 @@ def award_xp_page() -> None:
     }])
     events, events_live = fetch_table("xp_events", events_fallback)
 
-    view_tab, sop_tab, badge_sop_tab, manual_tab, approval_tab, records_tab = st.tabs(
+    view_tab, manual_tab, approval_tab, records_tab = st.tabs(
         [
-            "VIEW", "XP & STREAK SOP", "BADGE SOP", "MANUAL AWARD",
-            "APPROVE REQUEST", "EDIT & DELETE",
+            "VIEW", "MANUAL AWARD", "APPROVE REQUEST", "EDIT & DELETE",
         ]
     )
-    with sop_tab:
-        render_xp_streak_sop()
-    with badge_sop_tab:
-        render_badge_sop()
 
     matric_col = next((c for c in ["NO MATRIK", "student_id"] if c in students.columns), None)
     name_col = next(
@@ -4251,6 +4247,7 @@ def main() -> None:
             "Analysis XP": analysis_xp_page,
             "CRUD": admin_crud_page,
             "Award XP": award_xp_page,
+            "SOP": sop_page,
             "User access": user_access_page,
             "Material": lambda: materials_page(True),
             "Quiz": admin_quiz_page,
