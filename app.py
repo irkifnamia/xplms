@@ -48,6 +48,10 @@ class GeneratedQuiz(BaseModel):
     questions: list[GeneratedQuestion] = Field(min_length=1, max_length=20)
 
 
+QUIZ_BANK_DISTRIBUTION = {"easy": 40, "medium": 100, "hard": 60}
+DAILY_QUIZ_DISTRIBUTION = {"easy": 2, "medium": 5, "hard": 3}
+
+
 LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.png"
 AFJ_LOGO_PATH = Path(__file__).parent / "assets" / "afj.jpeg"
 BADGE_ASSET_DIR = Path(__file__).parent / "assets" / "badges"
@@ -749,7 +753,7 @@ DEMO_PROGRESS = pd.DataFrame(
 EMPTY_MATERIALS = pd.DataFrame(
     columns=[
         "id", "title", "course", "chapter", "material_type", "type",
-        "file_path", "uploaded_at",
+        "file_path", "student_visible", "quiz_source", "uploaded_at",
     ]
 )
 
@@ -870,61 +874,123 @@ def extract_material_text(filename: str, data: bytes) -> str:
     raise ValueError("Quiz generation supports PDF, DOCX, PPTX, TXT, MD and CSV materials.")
 
 
-def generate_material_quiz(material: pd.Series, question_count: int) -> tuple[bool, str]:
-    api_key = st.secrets.get("OPENAI_API_KEY")
+def openai_api_key() -> str:
+    """Read the server-side key without ever exposing it in the interface."""
+    return str(
+        st.secrets.get("OPENAI_API_KEY", "")
+        or os.getenv("OPENAI_API_KEY", "")
+    ).strip()
+
+
+def generate_chapter_quiz_bank(
+    materials: pd.DataFrame,
+    chapter: int,
+) -> tuple[bool, str]:
+    api_key = openai_api_key()
     if not api_key or OpenAI is None:
-        return False, "Add OPENAI_API_KEY to Streamlit secrets and install requirements to enable AI quiz generation."
+        return (
+            False,
+            "OPENAI_API_KEY is unavailable to the app. Add it to Streamlit "
+            "Secrets and restart the app.",
+        )
     client = db()
     try:
-        file_path = str(material["file_path"])
-        data = client.storage.from_("materials").download(file_path)
-        source_text = extract_material_text(file_path, data).strip()
+        source_sections = []
+        for _, material in materials.iterrows():
+            file_path = str(material["file_path"])
+            data = client.storage.from_("materials").download(file_path)
+            extracted = extract_material_text(file_path, data).strip()
+            if extracted:
+                source_sections.append(
+                    f"### {material.get('title', Path(file_path).name)}\n"
+                    f"{extracted}"
+                )
+        source_text = "\n\n".join(source_sections)
         if len(source_text) < 200:
-            return False, "The selected material does not contain enough readable text."
-        source_text = source_text[:60_000]
-        generated_questions: list[GeneratedQuestion] = []
-        generated_title = f"{material['title']} quiz"
-        openai_client = OpenAI(api_key=api_key)
-        remaining = question_count
-        batch_number = 1
-        while remaining:
-            batch_size = min(20, remaining)
-            response = openai_client.responses.parse(
-                model="gpt-5.6-luna",
-                input=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Create a fair educational multiple-choice quiz using only the supplied "
-                            "study material. Use four plausible options per question, one correct answer, "
-                            "clear explanations, and no trick questions. Avoid repeating questions."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Create exactly {batch_size} questions for batch {batch_number}. "
-                            f"Do not repeat these existing questions: "
-                            f"{[item.question for item in generated_questions]}\n\n"
-                            f"Study material:\n{source_text}"
-                        ),
-                    },
-                ],
-                text_format=GeneratedQuiz,
+            return (
+                False,
+                "The selected materials do not contain enough readable text. "
+                "Use PDF, DOCX, PPTX, TXT, MD or CSV source files.",
             )
-            generated = response.output_parsed
-            if batch_number == 1 and generated.title:
-                generated_title = generated.title
-            generated_questions.extend(generated.questions)
-            remaining -= batch_size
-            batch_number += 1
+        source_text = source_text[:100_000]
+        generated_questions: list[tuple[str, GeneratedQuestion]] = []
+        normalized_questions: set[str] = set()
+        openai_client = OpenAI(api_key=api_key)
+        model = str(
+            st.secrets.get("OPENAI_QUIZ_MODEL", "")
+            or os.getenv("OPENAI_QUIZ_MODEL", "")
+            or "gpt-5.6-luna"
+        )
+        for difficulty, target_count in QUIZ_BANK_DISTRIBUTION.items():
+            remaining = target_count
+            batch_number = 1
+            while remaining:
+                batch_size = min(20, remaining)
+                recent_questions = [
+                    item.question for _, item in generated_questions[-80:]
+                ]
+                response = openai_client.responses.parse(
+                    model=model,
+                    input=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Create fair educational multiple-choice questions "
+                                "using only the supplied study material. Every question "
+                                "must have four plausible options, exactly one correct "
+                                "answer, and a concise explanation. Do not use trick "
+                                "questions, outside knowledge, duplicates, or near-duplicates."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Create exactly {batch_size} {difficulty.upper()} "
+                                f"questions for Chapter C{chapter}. This is "
+                                f"{difficulty} batch {batch_number}. "
+                                f"Avoid these previously generated questions:\n"
+                                f"{json.dumps(recent_questions, ensure_ascii=False)}\n\n"
+                                f"STUDY MATERIAL:\n{source_text}"
+                            ),
+                        },
+                    ],
+                    text_format=GeneratedQuiz,
+                )
+                generated = response.output_parsed
+                unique_batch = []
+                for item in generated.questions:
+                    normalized = re.sub(
+                        r"\W+", " ", item.question.lower()
+                    ).strip()
+                    if normalized and normalized not in normalized_questions:
+                        normalized_questions.add(normalized)
+                        unique_batch.append(item)
+                if len(unique_batch) != batch_size:
+                    return (
+                        False,
+                        f"AI returned duplicate or incomplete {difficulty} "
+                        "questions. Generate the bank again.",
+                    )
+                generated_questions.extend(
+                    (difficulty, item) for item in unique_batch
+                )
+                remaining -= batch_size
+                batch_number += 1
+        if len(generated_questions) != 200:
+            return False, "The AI question bank was incomplete. Please try again."
+        material_ids = materials["id"].astype(int).tolist()
         quiz_row = client.table("quizzes").insert({
-            "material_id": int(material["id"]),
-            "title": generated_title,
-            "instructions": "Choose the best answer for each question.",
-            "xp_reward": 25,
+            "material_id": material_ids[0],
+            "source_material_ids": material_ids,
+            "chapter": int(chapter),
+            "title": f"C{chapter} AI question bank",
+            "instructions": (
+                "Daily set: 2 easy, 5 medium and 3 hard questions."
+            ),
+            "xp_reward": 1,
             "passing_score": 60,
             "status": "draft",
+            "target_question_count": 200,
             "generated_by_ai": True,
             "created_by": st.session_state.user["id"],
         }).execute().data[0]
@@ -932,15 +998,25 @@ def generate_material_quiz(material: pd.Series, question_count: int) -> tuple[bo
             {
                 "quiz_id": quiz_row["id"],
                 "position": index,
+                "difficulty": difficulty,
                 "question": item.question,
                 "options": item.options,
                 "correct_index": item.correct_index,
                 "explanation": item.explanation,
             }
-            for index, item in enumerate(generated_questions, start=1)
+            for index, (difficulty, item) in enumerate(
+                generated_questions, start=1
+            )
         ]
-        client.table("quiz_questions").insert(questions).execute()
-        return True, f"Draft quiz created with {len(questions)} questions."
+        for start in range(0, len(questions), 100):
+            client.table("quiz_questions").insert(
+                questions[start:start + 100]
+            ).execute()
+        return (
+            True,
+            f"C{chapter} draft bank created with 200 questions: "
+            "40 easy, 100 medium and 60 hard.",
+        )
     except Exception as exc:
         return False, f"Quiz generation failed: {exc}"
 
@@ -2150,13 +2226,13 @@ def render_xp_streak_sop() -> None:
         {
             "XP event": "In-app quiz attempt",
             "Method": "Automatic",
-            "Points": "5 XP per answered question",
+            "Points": "1 XP per answered question",
             "Daily request quota": "—",
         },
         {
             "XP event": "Correct quiz answer",
             "Method": "Automatic bonus",
-            "Points": "Additional 5 XP",
+            "Points": "Additional 1 XP",
             "Daily request quota": "—",
         },
     ])
@@ -2576,7 +2652,9 @@ def render_admin_material_view(
             c1.markdown(f"**{item['title']}**  \n{item['course']}")
             c2.caption(
                 f"C{item.get('chapter', '—')} · "
-                f"{item.get('material_type', 'Other')} · {item.get('type', 'FILE')}"
+                f"{item.get('material_type', 'Other')} · {item.get('type', 'FILE')}\n"
+                f"Student: {'YES' if bool(item.get('student_visible', True)) else 'NO'} "
+                f"· AI source: {'YES' if bool(item.get('quiz_source', False)) else 'NO'}"
             )
             if live and item.get("file_path"):
                 try:
@@ -2625,6 +2703,17 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                     material_types,
                     default=material_types[0],
                 )
+                st.markdown("**Material use**")
+                student_visible = st.checkbox(
+                    "Students can view and download",
+                    value=True,
+                )
+                quiz_source = st.checkbox(
+                    "Available as a source for AI quiz generation",
+                    value=False,
+                )
+                if not student_visible and not quiz_source:
+                    st.caption("This material will be available to admins only.")
                 files = st.file_uploader(
                     "Files",
                     type=[
@@ -2633,7 +2722,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                     ],
                     accept_multiple_files=True,
                 )
-                if st.form_submit_button("Share with students", type="primary"):
+                if st.form_submit_button("Upload material", type="primary"):
                     if not title.strip():
                         st.error("Enter a resource title.")
                     elif not files:
@@ -2641,9 +2730,14 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                     else:
                         client = db()
                         try:
-                            client.table("materials").select("chapter,material_type").limit(1).execute()
+                            client.table("materials").select(
+                                "chapter,material_type,student_visible,quiz_source"
+                            ).limit(1).execute()
                         except Exception:
-                            st.error("Run supabase_migration_005_material_classification.sql before uploading materials.")
+                            st.error(
+                                "Run supabase_migration_014_material_quiz_banks.sql "
+                                "before uploading materials."
+                            )
                         else:
                             uploaded_paths: list[str] = []
                             rows: list[dict[str, Any]] = []
@@ -2671,6 +2765,8 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                                         "material_type": material_type,
                                         "file_path": path,
                                         "type": file.name.rsplit(".", 1)[-1].upper(),
+                                        "student_visible": bool(student_visible),
+                                        "quiz_source": bool(quiz_source),
                                         "lecturer_id": st.session_state.user["id"],
                                 })
                             if error_message:
@@ -2686,7 +2782,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                                 )
                                 if saved:
                                     st.success(
-                                        f"{len(rows)} file(s) shared with students."
+                                        f"{len(rows)} material file(s) uploaded."
                                     )
                                     st.rerun()
                                 else:
@@ -2717,7 +2813,11 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                     f"**{selected.get('title', 'Untitled')}**  \n"
                     f"C{selected.get('chapter', '—')} · "
                     f"{selected.get('material_type', 'Other')} · "
-                    f"{selected.get('type', 'FILE')}"
+                    f"{selected.get('type', 'FILE')}  \n"
+                    f"Student: "
+                    f"{'YES' if bool(selected.get('student_visible', True)) else 'NO'} "
+                    f"· AI source: "
+                    f"{'YES' if bool(selected.get('quiz_source', False)) else 'NO'}"
                 )
                 if live and selected.get("file_path"):
                     try:
@@ -2754,6 +2854,14 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                         index=material_types.index(current_type)
                         if current_type in material_types else 0,
                     )
+                    edited_student_visible = st.checkbox(
+                        "Students can view and download",
+                        value=bool(selected.get("student_visible", True)),
+                    )
+                    edited_quiz_source = st.checkbox(
+                        "Available as a source for AI quiz generation",
+                        value=bool(selected.get("quiz_source", False)),
+                    )
                     if st.form_submit_button("Save changes", type="primary"):
                         if not edited_title.strip():
                             st.error("Enter a resource title.")
@@ -2766,6 +2874,10 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                                     "course": edited_course.strip() or "Mathematics",
                                     "chapter": int(edited_chapter),
                                     "material_type": edited_type,
+                                    "student_visible": bool(
+                                        edited_student_visible
+                                    ),
+                                    "quiz_source": bool(edited_quiz_source),
                                 }).eq("id", selected_id).execute()
                                 st.success("Material details updated.")
                                 st.rerun()
@@ -2795,6 +2907,11 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                         except Exception as exc:
                             st.error(f"Material could not be deleted: {exc}")
         return
+
+    if "student_visible" in materials.columns:
+        materials = materials[
+            materials["student_visible"].fillna(True).astype(bool)
+        ]
 
     filter_a, filter_b = st.columns(2)
     with filter_a:
@@ -2859,8 +2976,10 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                         width="stretch",
                     )
             if quiz_tools and live and item.get("file_path") and c4.button("Generate quiz", key=f"quiz_material_{i}"):
-                with st.spinner("Generating a draft quiz from this material…"):
-                    ok, message = generate_material_quiz(item, 10)
+                with st.spinner("Generating a 200-question draft bank…"):
+                    ok, message = generate_chapter_quiz_bank(
+                        pd.DataFrame([item]), int(item.get("chapter"))
+                    )
                 (st.success if ok else st.error)(message)
 
     if quiz_tools:
@@ -2884,42 +3003,91 @@ def admin_quiz_page() -> None:
     heading(
         "Assessment builder",
         "AI quiz generation",
-        "Generate up to 100 multiple-choice questions from an uploaded material.",
+        "Generate a balanced 200-question bank for each chapter.",
     )
     materials, live = fetch_table("materials", EMPTY_MATERIALS)
-    if materials.empty:
-        st.info("Upload at least one material before generating a quiz.")
-    else:
-        labels = {
-            int(row["id"]): (
-                f"C{row.get('chapter', '—')} · "
-                f"{row.get('material_type', 'Other')} · {row['title']}"
+    required_columns = {"id", "chapter", "file_path", "quiz_source"}
+    if live and not required_columns.issubset(materials.columns):
+        st.error(
+            "Run supabase_migration_014_material_quiz_banks.sql before "
+            "generating question banks."
+        )
+        return
+    quiz_sources = materials[
+        materials.get("quiz_source", pd.Series(False, index=materials.index))
+        .fillna(False)
+        .astype(bool)
+    ].copy()
+    if "type" in quiz_sources.columns:
+        quiz_sources = quiz_sources[
+            quiz_sources["type"].astype(str).str.upper().isin(
+                {"PDF", "DOCX", "PPTX", "TXT", "MD", "CSV"}
             )
-            for _, row in materials.iterrows()
-        }
+        ]
+
+    if not openai_api_key():
+        st.error(
+            "OPENAI_API_KEY is not available to the app. Configure it in "
+            "Streamlit Secrets, then reboot the app."
+        )
+    else:
+        st.success("OpenAI quiz generation is configured.")
+
+    if quiz_sources.empty:
+        st.info(
+            "In MATERIAL, mark at least one readable file as available for "
+            "AI quiz generation."
+        )
+    else:
+        chapters = sorted(
+            pd.to_numeric(quiz_sources["chapter"], errors="coerce")
+            .dropna().astype(int).unique().tolist()
+        )
         with st.form("admin_generate_quiz"):
-            material_id = st.selectbox(
-                "Source material",
+            chapter = st.selectbox(
+                "Chapter", chapters, format_func=lambda value: f"C{value}"
+            )
+            chapter_materials = quiz_sources[
+                pd.to_numeric(
+                    quiz_sources["chapter"], errors="coerce"
+                ) == int(chapter)
+            ]
+            labels = {
+                int(row["id"]): (
+                    f"{row['title']} · {row.get('material_type', 'Other')} "
+                    f"· {row.get('type', 'FILE')}"
+                )
+                for _, row in chapter_materials.iterrows()
+            }
+            material_ids = st.multiselect(
+                "Materials to feed to OpenAI",
                 list(labels),
+                default=list(labels),
                 format_func=lambda value: labels[value],
             )
-            question_count = st.number_input(
-                "Number of questions",
-                min_value=1,
-                max_value=100,
-                value=20,
-                step=5,
+            st.caption(
+                "Exactly 40 easy, 100 medium and 60 hard questions will be "
+                "generated in 10 structured AI batches. This can take several minutes."
             )
-            generate = st.form_submit_button("Generate draft quiz", type="primary")
+            generate = st.form_submit_button(
+                "Generate 200-question draft bank",
+                type="primary",
+                disabled=not bool(openai_api_key()),
+            )
             if generate:
-                selected = materials[materials["id"] == material_id].iloc[0]
-                with st.spinner(
-                    f"Generating {int(question_count)} questions in batches…"
-                ):
-                    ok, message = generate_material_quiz(
-                        selected, int(question_count)
-                    )
-                (st.success if ok else st.error)(message)
+                if not material_ids:
+                    st.error("Select at least one source material.")
+                else:
+                    selected = chapter_materials[
+                        chapter_materials["id"].astype(int).isin(material_ids)
+                    ]
+                    with st.spinner(
+                        f"Generating the balanced C{chapter} question bank…"
+                    ):
+                        ok, message = generate_chapter_quiz_bank(
+                            selected, int(chapter)
+                        )
+                    (st.success if ok else st.error)(message)
 
     st.subheader("Quiz library")
     quizzes, _ = fetch_table("quizzes", pd.DataFrame())
@@ -2931,16 +3099,44 @@ def admin_quiz_page() -> None:
             left, middle, right = st.columns([5, 2, 1.5])
             left.markdown(f"**{quiz['title']}**")
             middle.caption(
-                f"{str(quiz['status']).title()} · {quiz.get('xp_reward', 0)} XP"
+                f"C{quiz.get('chapter', '—')} · "
+                f"{str(quiz['status']).title()} · "
+                f"{quiz.get('target_question_count', 200)} questions"
             )
             if quiz["status"] == "draft" and right.button(
                 "Publish", key=f"admin_publish_quiz_{quiz['id']}"
             ):
-                db().table("quizzes").update({"status": "published"}).eq(
-                    "id", quiz["id"]
-                ).execute()
-                st.success("Quiz published to students.")
-                st.rerun()
+                try:
+                    chapter = int(quiz["chapter"])
+                    question_rows = db().table("quiz_questions").select(
+                        "difficulty"
+                    ).eq("quiz_id", quiz["id"]).execute().data
+                    counts = (
+                        pd.DataFrame(question_rows)["difficulty"]
+                        .value_counts()
+                        .to_dict()
+                        if question_rows else {}
+                    )
+                    if counts != QUIZ_BANK_DISTRIBUTION:
+                        st.error(
+                            "This draft is incomplete. Required: 40 easy, "
+                            "100 medium and 60 hard questions."
+                        )
+                    else:
+                        db().table("quizzes").update(
+                            {"status": "archived"}
+                        ).eq("chapter", chapter).eq(
+                            "status", "published"
+                        ).execute()
+                        db().table("quizzes").update(
+                            {"status": "published"}
+                        ).eq("id", quiz["id"]).execute()
+                        st.success(
+                            f"C{chapter} question bank published to students."
+                        )
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Question bank could not be published: {exc}")
 
 
 def quiz_page() -> None:
@@ -2951,32 +3147,25 @@ def quiz_page() -> None:
     )
     user = st.session_state.user
     today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
-    materials, materials_live = fetch_table("materials", EMPTY_MATERIALS)
     quizzes, quizzes_live = fetch_table("quizzes", pd.DataFrame())
-    live = materials_live and quizzes_live
+    live = quizzes_live
 
     if live:
-        required_quiz_columns = {"id", "material_id", "status"}
-        required_material_columns = {"id", "chapter"}
+        required_quiz_columns = {"id", "chapter", "status"}
         if (
             quizzes.empty
-            or materials.empty
             or not required_quiz_columns.issubset(quizzes.columns)
-            or not required_material_columns.issubset(materials.columns)
         ):
-            st.info("No published chapter question banks are available.")
+            st.info(
+                "No published chapter question banks are available. "
+                "An admin must run migration 014 and publish a bank."
+            )
             return
         quizzes = quizzes[quizzes["status"] == "published"].copy()
         if quizzes.empty:
             st.info("No published chapter question banks are available.")
             return
-        quiz_materials = quizzes.merge(
-            materials[["id", "chapter"]],
-            left_on="material_id",
-            right_on="id",
-            how="left",
-            suffixes=("_quiz", "_material"),
-        )
+        quiz_materials = quizzes.rename(columns={"id": "id_quiz"})
         quiz_materials = quiz_materials.dropna(subset=["chapter"])
         chapters = sorted(quiz_materials["chapter"].astype(int).unique().tolist())
     else:
@@ -2997,22 +3186,27 @@ def quiz_page() -> None:
     if live:
         client = db()
         try:
-            previous = (
+            attempt_history = (
                 client.table("quiz_attempts")
-                .select("score,correct_count,total_questions,xp_awarded,completed_at")
+                .select(
+                    "score,correct_count,total_questions,xp_awarded,"
+                    "completed_at,attempt_date,answers"
+                )
                 .eq("student_user_id", user["id"])
                 .eq("chapter", int(chapter))
-                .eq("attempt_date", today)
-                .limit(1)
                 .execute()
                 .data
             )
         except Exception:
             st.error(
-                "Run supabase_migration_006_revised_xp_daily_quiz.sql "
+                "Run supabase_migration_014_material_quiz_banks.sql "
                 "before using daily quizzes."
             )
             return
+        previous = [
+            attempt for attempt in attempt_history
+            if str(attempt.get("attempt_date")) == today
+        ]
         if previous:
             result = previous[0]
             st.success(
@@ -3021,6 +3215,16 @@ def quiz_page() -> None:
                 f"{int(result['xp_awarded'])} XP awarded."
             )
             return
+        seen_question_ids: set[str] = set()
+        for attempt in attempt_history:
+            saved_answers = attempt.get("answers") or {}
+            if isinstance(saved_answers, str):
+                try:
+                    saved_answers = json.loads(saved_answers)
+                except json.JSONDecodeError:
+                    saved_answers = {}
+            if isinstance(saved_answers, dict):
+                seen_question_ids.update(str(key) for key in saved_answers)
         chapter_quizzes = quiz_materials[
             quiz_materials["chapter"].astype(int) == int(chapter)
         ]
@@ -3037,10 +3241,15 @@ def quiz_page() -> None:
             questions.extend(rows)
     else:
         quiz_ids = [1]
+        seen_question_ids = set()
+        demo_difficulties = (
+            ["easy"] * 2 + ["medium"] * 5 + ["hard"] * 3
+        )
         questions = [
             {
                 "id": index,
                 "quiz_id": 1,
+                "difficulty": demo_difficulties[index - 1],
                 "question": f"Demo question {index}: what is {index} + 1?",
                 "options": [str(index), str(index + 1), str(index + 2), str(index + 3)],
                 "correct_index": 1,
@@ -3049,20 +3258,48 @@ def quiz_page() -> None:
             for index in range(1, 11)
         ]
 
-    if len(questions) < 10:
-        st.info(
-            f"C{chapter} currently has {len(questions)} questions. "
-            "An Admin must generate at least 10 before the daily quiz opens."
-        )
-        return
-
     seed_text = f"{user['id']}:{chapter}:{today}"
     seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:8], 16)
+    question_frame = pd.DataFrame(questions)
+    if question_frame.empty or "difficulty" not in question_frame.columns:
+        st.info(
+            f"C{chapter} does not have a migration-014 question bank yet."
+        )
+        return
+    question_frame["difficulty"] = (
+        question_frame["difficulty"].astype(str).str.lower()
+    )
+    question_frame = question_frame[
+        ~question_frame["id"].astype(str).isin(seen_question_ids)
+    ]
+    daily_questions: list[dict[str, Any]] = []
+    for offset, (difficulty, required) in enumerate(
+        DAILY_QUIZ_DISTRIBUTION.items()
+    ):
+        available = question_frame[
+            question_frame["difficulty"] == difficulty
+        ]
+        if len(available) < required:
+            st.info(
+                f"C{chapter} has no new daily set available. "
+                f"Only {len(available)} unseen {difficulty} questions remain; "
+                f"{required} are required. Ask an admin to generate a new bank."
+            )
+            return
+        daily_questions.extend(
+            available.sample(
+                n=required, random_state=seed + offset
+            ).to_dict("records")
+        )
     daily_questions = (
-        pd.DataFrame(questions).sample(n=10, random_state=seed).to_dict("records")
+        pd.DataFrame(daily_questions)
+        .sample(frac=1, random_state=seed + 10)
+        .to_dict("records")
     )
     st.caption(
-        "XP rule: 5 XP for every attempted answer, plus 5 XP for every correct answer."
+        "Today's set: 2 easy, 5 medium and 3 hard questions. "
+        "Each answered question earns 1 XP and each correct answer earns "
+        "1 additional XP."
     )
     with st.form(f"daily_quiz_{chapter}_{today}"):
         answers = {}
@@ -3088,7 +3325,7 @@ def quiz_page() -> None:
                 )
                 total_questions = len(daily_questions)
                 score = correct / total_questions * 100
-                xp_awarded = (total_questions * 5) + (correct * 5)
+                xp_awarded = total_questions + correct
                 if not live:
                     st.success(
                         f"Demo result: {correct}/10 correct · {xp_awarded} XP."
