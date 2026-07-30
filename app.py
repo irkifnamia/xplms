@@ -2233,7 +2233,7 @@ def student_leaderboard_page() -> None:
         ).astype(int)
 
     xp_individual, xp_class, xp_team, progress_individual, progress_class = st.tabs([
-        "XP (IND)", "XP (CLASS)",
+        "XP & STREAK (IND)", "XP (CLASS)",
         "XP (XPTEAM)", "TEST (IND)", "TEST (CLASS)",
     ])
     with xp_individual:
