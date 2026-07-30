@@ -1481,6 +1481,36 @@ def profile_page() -> None:
                         st.success("Password changed successfully.")
 
 
+XP_REQUEST_TYPES = [
+    "consultation",
+    "class_participation",
+    "commitment",
+    "study_group",
+    "extra_practice",
+]
+XP_DAILY_REQUEST_QUOTAS = {
+    "study_group": 2,
+    "extra_practice": 2,
+}
+
+
+def xp_requests_today(claims: pd.DataFrame, claim_type: str) -> int:
+    if (
+        claims.empty
+        or not {"claim_type", "created_at"}.issubset(claims.columns)
+    ):
+        return 0
+    dates = pd.to_datetime(claims["created_at"], errors="coerce", utc=True)
+    malaysia_dates = dates.dt.tz_convert("Asia/Kuala_Lumpur").dt.date
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date()
+    return int(
+        (
+            (claims["claim_type"].astype(str) == claim_type)
+            & (malaysia_dates == today)
+        ).sum()
+    )
+
+
 def _legacy_xp_badge_page() -> None:
     heading(
         "Recognition request",
@@ -1506,20 +1536,30 @@ def _legacy_xp_badge_page() -> None:
     with request_tab:
         st.write(
             "Submit evidence for consultation, class participation, commitment or "
-            "a study group. An Admin will review the request."
+            "a study group, or extra practice such as past-year questions. "
+            "An Admin will review the request."
         )
         with st.form("xp_proof_claim", clear_on_submit=True):
             claim_type = st.selectbox(
                 "XP type",
-                ["consultation", "class_participation", "commitment", "study_group"],
+                XP_REQUEST_TYPES,
                 format_func=lambda value: value.replace("_", " ").title(),
             )
+            quota = XP_DAILY_REQUEST_QUOTAS.get(claim_type)
+            if quota:
+                used = xp_requests_today(claims, claim_type)
+                st.caption(f"Daily quota: {used}/{quota} requests used today.")
             title = st.text_input("Request title")
             description = st.text_area("Describe the activity and what you learned")
             proof = st.file_uploader("Proof image (optional)", type=["jpg", "jpeg", "png", "webp"])
             if st.form_submit_button("Send for approval", type="primary"):
                 if not title.strip() or not description.strip():
                     st.error("Complete the title and description.")
+                elif quota and xp_requests_today(claims, claim_type) >= quota:
+                    st.error(
+                        f"Daily quota reached: maximum {quota} "
+                        f"{claim_type.replace('_', ' ')} requests per day."
+                    )
                 elif is_demo():
                     st.success("Demo request submitted for Admin approval.")
                 else:
@@ -1708,12 +1748,21 @@ def request_xp_page() -> None:
 
     request_tab, list_tab = st.tabs(["REQUEST XP", "MY XP REQUEST"])
     with request_tab:
+        st.info(
+            "Study group and Extra practice requests are limited to 2 requests "
+            "per type per day. Extra practice includes past-year questions and "
+            "other additional exercises."
+        )
         with st.form("student_xp_request", clear_on_submit=True):
             claim_type = st.selectbox(
                 "XP type",
-                ["consultation", "class_participation", "commitment", "study_group"],
+                XP_REQUEST_TYPES,
                 format_func=lambda value: value.replace("_", " ").title(),
             )
+            quota = XP_DAILY_REQUEST_QUOTAS.get(claim_type)
+            if quota:
+                used = xp_requests_today(claims, claim_type)
+                st.caption(f"Daily quota: {used}/{quota} requests used today.")
             title = st.text_input("Request title")
             description = st.text_area("Describe the activity")
             proof = st.file_uploader(
@@ -1722,6 +1771,11 @@ def request_xp_page() -> None:
             if st.form_submit_button("Send for approval", type="primary"):
                 if not title.strip() or not description.strip():
                     st.error("Complete the title and description.")
+                elif quota and xp_requests_today(claims, claim_type) >= quota:
+                    st.error(
+                        f"Daily quota reached: maximum {quota} "
+                        f"{claim_type.replace('_', ' ')} requests per day."
+                    )
                 elif is_demo():
                     st.success("Demo request submitted.")
                 else:
@@ -1769,31 +1823,43 @@ def render_xp_sop() -> None:
             "XP event": "Consultation",
             "Method": "Admin manual award / Student request → Admin approval",
             "Points": "20 XP default",
+            "Daily request quota": "—",
         },
         {
             "XP event": "Class participation",
             "Method": "Admin manual award / Student request → Admin approval",
             "Points": "10 XP default",
+            "Daily request quota": "—",
         },
         {
             "XP event": "Commitment",
             "Method": "Admin manual award / Student request → Admin approval",
             "Points": "10 XP default",
+            "Daily request quota": "—",
         },
         {
             "XP event": "Study group",
             "Method": "Student request → Admin approval",
+            "Points": "5 XP default",
+            "Daily request quota": "2 per day",
+        },
+        {
+            "XP event": "Extra practice",
+            "Method": "Student request → Admin approval",
             "Points": "15 XP default",
+            "Daily request quota": "2 per day",
         },
         {
             "XP event": "In-app quiz attempt",
             "Method": "Automatic",
             "Points": "5 XP per answered question",
+            "Daily request quota": "—",
         },
         {
             "XP event": "Correct quiz answer",
             "Method": "Automatic bonus",
             "Points": "Additional 5 XP",
+            "Daily request quota": "—",
         },
     ])
     st.dataframe(sop, hide_index=True, width="stretch")
@@ -2783,7 +2849,13 @@ def _legacy_award_xp_page() -> None:
                         try:
                             rule_code = str(claim.get("claim_type", "study_group"))
                             rule = client.table("xp_rules").select("default_points").eq("code", rule_code).limit(1).execute().data
-                            points = int(rule[0]["default_points"]) if rule else 20
+                            points = (
+                                int(rule[0]["default_points"])
+                                if rule else {
+                                    "study_group": 5,
+                                    "extra_practice": 15,
+                                }.get(rule_code, 20)
+                            )
                             event = client.table("xp_events").insert({
                                 "NO MATRIK": claim["NO MATRIK"],
                                 "rule_code": rule_code,
@@ -2820,7 +2892,7 @@ def _legacy_award_xp_page() -> None:
     st.subheader("How XP is awarded")
     st.markdown(
         "- **Admin awards:** consultation, class participation and commitment.\n"
-        "- **Admin-approved requests:** consultation, class participation, commitment or study group with proof.\n"
+        "- **Admin-approved requests:** consultation, class participation, commitment, study group or extra practice.\n"
         "- **Automatic awards:** daily in-app chapter quizzes."
     )
     if not (students_live and rules_live):
@@ -3021,7 +3093,13 @@ def award_xp_page() -> None:
                             try:
                                 rule_code = str(claim.get("claim_type", "study_group"))
                                 rule = client.table("xp_rules").select("default_points").eq("code", rule_code).limit(1).execute().data
-                                points = int(rule[0]["default_points"]) if rule else 20
+                                points = (
+                                    int(rule[0]["default_points"])
+                                    if rule else {
+                                        "study_group": 5,
+                                        "extra_practice": 15,
+                                    }.get(rule_code, 20)
+                                )
                                 event = client.table("xp_events").insert({
                                     "NO MATRIK": claim["NO MATRIK"], "rule_code": rule_code,
                                     "points": points, "source_id": f"claim-{claim['id']}",
