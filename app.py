@@ -72,6 +72,15 @@ BADGE_IMAGE_DATA = {
     }
     for family, paths in BADGE_IMAGE_PATHS.items()
 }
+LOGIN_BADGE_IMAGE_DATA = {
+    family: {
+        name: base64.b64encode(
+            (BADGE_ASSET_DIR / "login" / f"{path.stem}.webp").read_bytes()
+        ).decode("ascii")
+        for name, path in paths.items()
+    }
+    for family, paths in BADGE_IMAGE_PATHS.items()
+}
 LOGO_IMAGE = Image.open(LOGO_PATH)
 LOGO_DATA = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
 
@@ -314,6 +323,36 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   color:#687487;
   background:#eef1f5;
   border-color:#d7dce4;
+}
+.login-badges {
+  margin:10px auto 14px;
+  padding:10px 11px;
+  background:linear-gradient(145deg,rgba(255,255,255,.92),rgba(235,245,255,.92));
+  border:1px solid #c9d9eb;
+  border-radius:16px;
+  box-shadow:0 5px 18px rgba(31,93,170,.07);
+}
+.login-badge-row {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:7px;
+}
+.login-badge-row + .login-badge-row { margin-top:7px; }
+.login-badge-item {
+  min-width:0;
+  padding:4px;
+  background:#fff;
+  border:1px solid #dce5ef;
+  border-radius:12px;
+}
+.login-badge-item img {
+  display:block;
+  width:100%;
+  max-width:72px;
+  aspect-ratio:1;
+  object-fit:contain;
+  margin:auto;
+  filter:drop-shadow(0 3px 4px rgba(18,42,76,.13));
 }
 .result-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
 .result-card { background:#fff; border:1px solid var(--line); border-top:4px solid var(--brand);
@@ -979,6 +1018,10 @@ def sync_navigation(source_key: str, active_key: str) -> None:
     st.session_state[active_key] = st.session_state[source_key]
 
 
+def sync_admin_preview(source_key: str) -> None:
+    st.session_state.admin_preview_role = st.session_state[source_key]
+
+
 def sidebar(role: str, name: str) -> str:
     with st.sidebar:
         if role == "Student":
@@ -1074,6 +1117,23 @@ def mobile_navigation(role: str, current_page: str) -> str:
         st.session_state[mobile_key] = st.session_state[active_key]
     with st.container(key=f"mobile_navigation_{role.lower()}"):
         st.markdown('<span class="mobile-nav-marker"></span>', unsafe_allow_html=True)
+        if (
+            st.session_state.user.get("role") == "Admin"
+            and not is_demo()
+        ):
+            preview_key = "mobile_admin_preview_role"
+            preview_roles = ["Admin", "Student"]
+            if st.session_state.get(preview_key) not in preview_roles:
+                st.session_state[preview_key] = role
+            st.selectbox(
+                "WORKSPACE PREVIEW",
+                preview_roles,
+                format_func=lambda value: f"VIEW {value.upper()} WORKSPACE",
+                key=preview_key,
+                on_change=sync_admin_preview,
+                args=(preview_key,),
+                help="Switch between the administrator and student views.",
+            )
         with st.container(
             horizontal=True,
             horizontal_alignment="left",
@@ -1105,6 +1165,19 @@ def login() -> None:
     with centre:
         st.markdown("<div style='height:6vh'></div>", unsafe_allow_html=True)
         centered_image(LOGO_PATH, 132)
+        badge_rows = []
+        for family in ("xp", "streak"):
+            badges = "".join(
+                f'<div class="login-badge-item"><img '
+                f'src="data:image/webp;base64,{LOGIN_BADGE_IMAGE_DATA[family][name]}" '
+                f'alt="{html.escape(f"{family} {name} badge")}"></div>'
+                for name in ("Rookie", "Explorer", "Expert", "Legend")
+            )
+            badge_rows.append(f'<div class="login-badge-row">{badges}</div>')
+        st.markdown(
+            f'<div class="login-badges">{"".join(badge_rows)}</div>',
+            unsafe_allow_html=True,
+        )
         client = db()
         if not client:
             st.error("XPLMS server access is not configured. Add SUPABASE_SECRET_KEY to Streamlit secrets.")
