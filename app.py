@@ -856,7 +856,7 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Profile", "Materials", "My XP", "XP SOP", "Leaderboard",
+                "Profile", "Materials", "My XP", "SOP", "Leaderboard",
                 "Results", "Request XP", "Quiz"
             ],
             "Admin": [
@@ -899,7 +899,7 @@ def sidebar(role: str, name: str) -> str:
 def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
-            "Profile", "Materials", "My XP", "XP SOP", "Leaderboard",
+            "Profile", "Materials", "My XP", "SOP", "Leaderboard",
             "Results", "Request XP", "Quiz",
         ],
         "Admin": [
@@ -1086,6 +1086,19 @@ ASSESSMENT_COLUMNS = [
     "task",
 ]
 
+BADGE_LEVELS = [
+    (100, "Rookie"),
+    (300, "Explorer"),
+    (600, "Expert"),
+    (1000, "Legend"),
+]
+
+
+def badge_name_for_xp(xp: Any) -> str:
+    value = float(pd.to_numeric(pd.Series([xp]), errors="coerce").fillna(0).iloc[0])
+    earned = [name for threshold, name in BADGE_LEVELS if value >= threshold]
+    return earned[-1] if earned else "None"
+
 
 def progress_standings(
     assessment: str,
@@ -1140,6 +1153,7 @@ def leaderboard_data(
     """Build fair individual and class rankings from the XP ledger."""
     merged, _ = merged_students()
     events, _ = fetch_table("xp_events", pd.DataFrame())
+    earned_badges, badges_live = fetch_table("student_badges", pd.DataFrame())
     current_month = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).strftime("%Y-%m")
     available_months = [current_month]
     if not events.empty and "created_at" in events.columns:
@@ -1216,11 +1230,21 @@ def leaderboard_data(
     individuals["Overall Rank"] = (
         individuals["Overall XP"].rank(method="min", ascending=False).astype(int)
     )
-    individuals["Badge"] = pd.cut(
-        individuals["Overall XP"],
-        bins=[float("-inf"), 99, 299, 599, 999, float("inf")],
-        labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
-    ).astype(str)
+    if (
+        badges_live
+        and not earned_badges.empty
+        and {"NO MATRIK", "badge_name", "xp_threshold"}.issubset(earned_badges.columns)
+    ):
+        permanent_badges = (
+            earned_badges.sort_values("xp_threshold")
+            .groupby("NO MATRIK", as_index=True)["badge_name"]
+            .last()
+        )
+        individuals["Badge"] = (
+            individuals["NO MATRIK"].map(permanent_badges).fillna("None")
+        )
+    else:
+        individuals["Badge"] = individuals["Overall XP"].map(badge_name_for_xp)
 
     classes = (
         individuals.groupby("Class", dropna=False)
@@ -1241,11 +1265,7 @@ def leaderboard_data(
     classes["Overall Rank"] = (
         classes["Overall XP Average"].rank(method="min", ascending=False).astype(int)
     )
-    classes["Class Badge"] = pd.cut(
-        classes["Overall XP Average"],
-        bins=[float("-inf"), 99, 299, 599, 999, float("inf")],
-        labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
-    ).astype(str)
+    classes["Class Badge"] = classes["Overall XP Average"].map(badge_name_for_xp)
     return individuals, classes, available_months, selected_month
 
 
@@ -1533,7 +1553,7 @@ def _legacy_xp_badge_page() -> None:
                 hide_index=True, width="stretch",
             )
     with badge_tab:
-        thresholds = [(100, "Starter"), (300, "Active learner"), (600, "Achiever"), (1000, "XP Elite")]
+        thresholds = BADGE_LEVELS
         captured = [(points, badge) for points, badge in thresholds if current_xp >= points]
         next_badge = next(((points, badge) for points, badge in thresholds if current_xp < points), None)
         a, b = st.columns(2)
@@ -1582,12 +1602,7 @@ def _legacy_student_leaderboard_page() -> None:
         own = individuals.head(1)
     if not own.empty:
         row = own.iloc[0]
-        badge_thresholds = [
-            (100, "Starter"),
-            (300, "Active learner"),
-            (600, "Achiever"),
-            (1000, "XP Elite"),
-        ]
+        badge_thresholds = BADGE_LEVELS
         captured = [
             badge for threshold, badge in badge_thresholds
             if float(row["Overall XP"]) >= threshold
@@ -1767,9 +1782,43 @@ def render_xp_sop() -> None:
     st.dataframe(sop, hide_index=True, width="stretch")
 
 
-def xp_sop_page() -> None:
-    heading("", "XP SOP")
-    render_xp_sop()
+def render_badge_sop() -> None:
+    badges = pd.DataFrame([
+        {
+            "Badge": "Rookie",
+            "Overall XP required": 100,
+            "Description": "First milestone for consistent participation.",
+        },
+        {
+            "Badge": "Explorer",
+            "Overall XP required": 300,
+            "Description": "Recognises active engagement across learning activities.",
+        },
+        {
+            "Badge": "Expert",
+            "Overall XP required": 600,
+            "Description": "Recognises sustained achievement and contribution.",
+        },
+        {
+            "Badge": "Legend",
+            "Overall XP required": 1000,
+            "Description": "Highest milestone for exceptional long-term engagement.",
+        },
+    ])
+    st.dataframe(badges, hide_index=True, width="stretch")
+    st.info(
+        "Badges are captured permanently when the overall XP threshold is first "
+        "reached. A later XP deduction does not remove an earned badge."
+    )
+
+
+def sop_page() -> None:
+    heading("", "SOP")
+    xp_tab, badge_tab = st.tabs(["XP SOP", "BADGE SOP"])
+    with xp_tab:
+        render_xp_sop()
+    with badge_tab:
+        render_badge_sop()
 
 
 def my_xp_page() -> None:
@@ -1820,16 +1869,30 @@ def my_xp_page() -> None:
             with c: metric("Monthly rank", f"#{int(row['Monthly Rank'])}")
             with d: metric("Overall rank", f"#{int(row['Overall Rank'])}")
     with badge_tab:
-        thresholds = [
-            (100, "Starter"), (300, "Active learner"),
-            (600, "Achiever"), (1000, "XP Elite"),
-        ]
-        captured = [
-            (points, badge) for points, badge in thresholds
-            if current_xp >= points
-        ]
+        earned, earned_live = fetch_table("student_badges", pd.DataFrame())
+        if earned_live and "NO MATRIK" in earned.columns:
+            earned = earned[
+                earned["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
+            ]
+        if earned_live:
+            captured = sorted(
+                [
+                    (int(row["xp_threshold"]), str(row["badge_name"]))
+                    for _, row in earned.iterrows()
+                    if pd.notna(row.get("xp_threshold"))
+                ],
+                key=lambda item: item[0],
+            )
+        else:
+            captured = [
+                (points, badge) for points, badge in BADGE_LEVELS
+                if current_xp >= points
+            ]
         next_badge = next(
-            ((points, badge) for points, badge in thresholds if current_xp < points),
+            (
+                (points, badge) for points, badge in BADGE_LEVELS
+                if badge not in {name for _, name in captured}
+            ),
             None,
         )
         a, b = st.columns(2)
@@ -2530,11 +2593,13 @@ def award_xp_page() -> None:
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
 
-    sop_tab, manual_tab, approval_tab = st.tabs(
-        ["XP SOP", "MANUAL AWARD", "APPROVE REQUEST"]
+    sop_tab, badge_sop_tab, manual_tab, approval_tab = st.tabs(
+        ["XP SOP", "BADGE SOP", "MANUAL AWARD", "APPROVE REQUEST"]
     )
     with sop_tab:
         render_xp_sop()
+    with badge_sop_tab:
+        render_badge_sop()
 
     matric_col = next((c for c in ["NO MATRIK", "student_id"] if c in students.columns), None)
     name_col = next(
@@ -2838,11 +2903,6 @@ def analysis_xp_page() -> None:
     if individuals.empty:
         st.info("No XP records are available.")
         return
-    individuals["Badge"] = pd.cut(
-        individuals["Overall XP"],
-        bins=[float("-inf"), 99, 299, 599, 999, float("inf")],
-        labels=["None", "Starter", "Active learner", "Achiever", "XP Elite"],
-    ).astype(str)
     a, b, c = st.columns(3)
     with a: metric("Monthly XP", f"{int(individuals['Monthly XP'].sum()):,}", selected_month)
     with b: metric("Overall XP", f"{int(individuals['Overall XP'].sum()):,}", "Cumulative balance")
@@ -3510,7 +3570,7 @@ def main() -> None:
             "Materials": materials_page,
             "Quiz": quiz_page,
             "My XP": my_xp_page,
-            "XP SOP": xp_sop_page,
+            "SOP": sop_page,
             "Leaderboard": student_leaderboard_page,
             "Profile": profile_page,
             "Request XP": request_xp_page,
