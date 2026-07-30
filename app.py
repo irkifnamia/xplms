@@ -3391,9 +3391,81 @@ def admin_crud_page() -> None:
         if data.empty:
             st.info("No records are available to update.")
         else:
-            edited = st.data_editor(data, hide_index=True, width="stretch")
+            base_columns = data.columns.tolist()
+            update_view = data.copy()
+            identification_columns: list[str] = []
+            if target in {"stud_progress", "stud_xp"} and "NO MATRIK" in data.columns:
+                background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+                background_key = next(
+                    (
+                        column for column in ["NO MATRIK", "student_id"]
+                        if column in background.columns
+                    ),
+                    None,
+                )
+                background_name = next(
+                    (
+                        column for column in ["NAMA PELAJAR", "name"]
+                        if column in background.columns
+                    ),
+                    None,
+                )
+                background_class = next(
+                    (
+                        column for column in ["KELAS", "class", "cohort"]
+                        if column in background.columns
+                    ),
+                    None,
+                )
+                if background_key:
+                    identity = background[[
+                        column for column in [
+                            background_key, background_name, background_class
+                        ] if column
+                    ]].drop_duplicates(subset=[background_key])
+                    identity = identity.rename(columns={
+                        background_key: "NO MATRIK",
+                        **(
+                            {background_name: "NAMA PELAJAR"}
+                            if background_name else {}
+                        ),
+                        **(
+                            {background_class: "KELAS"}
+                            if background_class else {}
+                        ),
+                    })
+                    update_view = update_view.merge(
+                        identity, on="NO MATRIK", how="left"
+                    )
+                    identification_columns = [
+                        column for column in ["NAMA PELAJAR", "KELAS"]
+                        if column in update_view.columns
+                        and column not in base_columns
+                    ]
+                    ordered_columns = [
+                        "NO MATRIK", *identification_columns,
+                        *[
+                            column for column in update_view.columns
+                            if column not in {"NO MATRIK", *identification_columns}
+                        ],
+                    ]
+                    update_view = update_view[ordered_columns]
+            edited = st.data_editor(
+                update_view,
+                hide_index=True,
+                width="stretch",
+                disabled=identification_columns,
+                column_config={
+                    "NAMA PELAJAR": st.column_config.TextColumn(
+                        "NAMA PELAJAR", help="Read-only identification"
+                    ),
+                    "KELAS": st.column_config.TextColumn(
+                        "KELAS", help="Read-only identification"
+                    ),
+                },
+            )
             if st.button("Save updates", type="primary"):
-                ok, message = upsert_rows(target, edited)
+                ok, message = upsert_rows(target, edited[base_columns])
                 (st.success if ok else st.error)(message)
     with delete_tab:
         if data.empty:
