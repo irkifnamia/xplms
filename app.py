@@ -1884,7 +1884,7 @@ def request_xp_page() -> None:
             )
 
 
-def render_xp_sop() -> None:
+def render_xp_streak_sop() -> None:
     sop = pd.DataFrame([
         {
             "XP event": "Consultation",
@@ -1930,6 +1930,28 @@ def render_xp_sop() -> None:
         },
     ])
     st.dataframe(sop, hide_index=True, width="stretch")
+    st.subheader("STREAK SOP")
+    streak_sop = pd.DataFrame([
+        {
+            "Qualifying activity": "In-app quiz",
+            "Daily requirement": "Complete at least 1 full quiz set",
+            "Streak date": "Quiz completion date",
+        },
+        {
+            "Qualifying activity": "Extra practice",
+            "Daily requirement": "At least 1 request approved by Admin",
+            "Streak date": "Original request date",
+        },
+    ])
+    st.dataframe(streak_sop, hide_index=True, width="stretch")
+    st.markdown(
+        "- One qualifying activity is enough to capture the streak day; additional "
+        "qualifying activities on the same date do not add extra days.\n"
+        "- Streak days must be consecutive using the Malaysia calendar date.\n"
+        "- Today remains available until the day ends. If a completed day is "
+        "missed, the current streak resets to **0**.\n"
+        "- Streak badges already captured remain permanent after a streak reset."
+    )
 
 
 def render_badge_sop() -> None:
@@ -1961,9 +1983,9 @@ def render_badge_sop() -> None:
 
 def sop_page() -> None:
     heading("", "SOP")
-    xp_tab, badge_tab = st.tabs(["XP SOP", "BADGE SOP"])
+    xp_tab, badge_tab = st.tabs(["XP & STREAK SOP", "BADGE SOP"])
     with xp_tab:
-        render_xp_sop()
+        render_xp_streak_sop()
     with badge_tab:
         render_badge_sop()
 
@@ -3011,12 +3033,12 @@ def award_xp_page() -> None:
 
     view_tab, sop_tab, badge_sop_tab, manual_tab, approval_tab, records_tab = st.tabs(
         [
-            "VIEW", "XP SOP", "BADGE SOP", "MANUAL AWARD",
+            "VIEW", "XP & STREAK SOP", "BADGE SOP", "MANUAL AWARD",
             "APPROVE REQUEST", "EDIT & DELETE",
         ]
     )
     with sop_tab:
-        render_xp_sop()
+        render_xp_streak_sop()
     with badge_sop_tab:
         render_badge_sop()
 
