@@ -1104,6 +1104,32 @@ BADGE_LEVELS = [
     (600, "Expert"),
     (1000, "Legend"),
 ]
+STREAK_BADGE_LEVELS = [
+    (7, "Rookie"),
+    (14, "Explorer"),
+    (21, "Expert"),
+    (28, "Legend"),
+]
+
+
+def streak_summary() -> tuple[pd.DataFrame, bool]:
+    return fetch_table(
+        "student_streak_summary",
+        pd.DataFrame([
+            {
+                "NO MATRIK": "S24001",
+                "current_streak": 8,
+                "longest_streak": 8,
+                "last_activity_date": "2026-07-30",
+            },
+            {
+                "NO MATRIK": "S24002",
+                "current_streak": 3,
+                "longest_streak": 5,
+                "last_activity_date": "2026-07-30",
+            },
+        ]),
+    )
 
 
 def badge_name_for_xp(xp: Any) -> str:
@@ -1166,6 +1192,7 @@ def leaderboard_data(
     merged, _ = merged_students()
     events, _ = fetch_table("xp_events", pd.DataFrame())
     earned_badges, badges_live = fetch_table("student_badges", pd.DataFrame())
+    streaks, _ = streak_summary()
     current_month = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).strftime("%Y-%m")
     available_months = [current_month]
     if not events.empty and "created_at" in events.columns:
@@ -1252,8 +1279,11 @@ def leaderboard_data(
         and not earned_badges.empty
         and {"NO MATRIK", "badge_name", "xp_threshold"}.issubset(earned_badges.columns)
     ):
+        xp_badges = earned_badges.copy()
+        if "badge_family" in xp_badges.columns:
+            xp_badges = xp_badges[xp_badges["badge_family"] == "xp"]
         permanent_badges = (
-            earned_badges.sort_values("xp_threshold")
+            xp_badges.sort_values("xp_threshold")
             .groupby("NO MATRIK", as_index=True)["badge_name"]
             .last()
         )
@@ -1262,6 +1292,43 @@ def leaderboard_data(
         )
     else:
         individuals["Badge"] = individuals["Overall XP"].map(badge_name_for_xp)
+    if not streaks.empty and {"NO MATRIK", "current_streak"}.issubset(streaks.columns):
+        streak_map = streaks.set_index("NO MATRIK")["current_streak"]
+        individuals["Current Streak"] = pd.to_numeric(
+            individuals["NO MATRIK"].map(streak_map), errors="coerce"
+        ).fillna(0).astype(int)
+    else:
+        individuals["Current Streak"] = 0
+    if (
+        badges_live
+        and not earned_badges.empty
+        and {"NO MATRIK", "badge_family", "badge_name", "streak_threshold"}.issubset(
+            earned_badges.columns
+        )
+    ):
+        permanent_streak_badges = (
+            earned_badges[earned_badges["badge_family"] == "streak"]
+            .sort_values("streak_threshold")
+            .groupby("NO MATRIK", as_index=True)["badge_name"]
+            .last()
+        )
+        individuals["Streak Badge"] = (
+            individuals["NO MATRIK"].map(permanent_streak_badges).fillna("None")
+        )
+    else:
+        individuals["Streak Badge"] = individuals["Current Streak"].map(
+            lambda days: (
+                [
+                    name for threshold, name in STREAK_BADGE_LEVELS
+                    if int(days) >= threshold
+                ][-1]
+                if any(
+                    int(days) >= threshold
+                    for threshold, _ in STREAK_BADGE_LEVELS
+                )
+                else "None"
+            )
+        )
 
     classes = (
         individuals.groupby("Class", dropna=False)
@@ -1866,32 +1933,29 @@ def render_xp_sop() -> None:
 
 
 def render_badge_sop() -> None:
-    badges = pd.DataFrame([
-        {
-            "Badge": "Rookie",
-            "Overall XP required": 100,
-            "Description": "First milestone for consistent participation.",
-        },
-        {
-            "Badge": "Explorer",
-            "Overall XP required": 300,
-            "Description": "Recognises active engagement across learning activities.",
-        },
-        {
-            "Badge": "Expert",
-            "Overall XP required": 600,
-            "Description": "Recognises sustained achievement and contribution.",
-        },
-        {
-            "Badge": "Legend",
-            "Overall XP required": 1000,
-            "Description": "Highest milestone for exceptional long-term engagement.",
-        },
-    ])
+    badges = pd.DataFrame(
+        [
+            {
+                "Badge family": family,
+                "Badge": badge,
+                "Requirement": (
+                    f"{threshold} overall XP"
+                    if family == "XP" else f"{threshold}-day streak"
+                ),
+            }
+            for family, levels in [
+                ("XP", BADGE_LEVELS),
+                ("Streak", STREAK_BADGE_LEVELS),
+            ]
+            for threshold, badge in levels
+        ]
+    )
     st.dataframe(badges, hide_index=True, width="stretch")
     st.info(
-        "Badges are captured permanently when the overall XP threshold is first "
-        "reached. A later XP deduction does not remove an earned badge."
+        "XP and Streak badges are captured permanently when their threshold is "
+        "first reached. Later XP deductions or a streak reset do not remove an "
+        "earned badge. A streak day requires either one completed in-app quiz set "
+        "or one approved Extra practice request."
     )
 
 
@@ -1957,46 +2021,69 @@ def my_xp_page() -> None:
             earned = earned[
                 earned["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
             ]
-        if earned_live:
-            captured = sorted(
-                [
-                    (int(row["xp_threshold"]), str(row["badge_name"]))
-                    for _, row in earned.iterrows()
-                    if pd.notna(row.get("xp_threshold"))
-                ],
-                key=lambda item: item[0],
-            )
+        current_streak = int(row.get("Current Streak", 0)) if row is not None else 0
+        if earned_live and "badge_family" in earned.columns:
+            xp_captured = earned[earned["badge_family"] == "xp"]
+            streak_captured = earned[earned["badge_family"] == "streak"]
+            captured_rows = earned[[
+                column for column in [
+                    "badge_family", "badge_name", "xp_threshold",
+                    "streak_threshold", "earned_at",
+                ] if column in earned.columns
+            ]].copy()
         else:
-            captured = [
-                (points, badge) for points, badge in BADGE_LEVELS
-                if current_xp >= points
-            ]
-        next_badge = next(
-            (
-                (points, badge) for points, badge in BADGE_LEVELS
-                if badge not in {name for _, name in captured}
-            ),
+            xp_captured = pd.DataFrame([
+                {"badge_name": badge, "xp_threshold": threshold}
+                for threshold, badge in BADGE_LEVELS if current_xp >= threshold
+            ])
+            streak_captured = pd.DataFrame([
+                {"badge_name": badge, "streak_threshold": threshold}
+                for threshold, badge in STREAK_BADGE_LEVELS
+                if current_streak >= threshold
+            ])
+            captured_rows = pd.concat([
+                xp_captured.assign(badge_family="xp"),
+                streak_captured.assign(badge_family="streak"),
+            ], ignore_index=True)
+        a, b, c = st.columns(3)
+        with a: metric("Current streak", f"{current_streak} days")
+        with b: metric("XP badges", str(len(xp_captured)))
+        with c: metric("Streak badges", str(len(streak_captured)))
+        xp_names = set(xp_captured.get("badge_name", pd.Series(dtype=str)))
+        next_xp = next(
+            ((threshold, badge) for threshold, badge in BADGE_LEVELS
+             if badge not in xp_names),
             None,
         )
-        a, b = st.columns(2)
-        with a: metric("Badges captured", str(len(captured)))
-        with b: metric(
-            "Current badge", captured[-1][1] if captured else "None"
+        streak_names = set(
+            streak_captured.get("badge_name", pd.Series(dtype=str))
         )
-        if next_badge:
-            remaining = next_badge[0] - current_xp
-            st.subheader(f"{remaining:,} XP TO {next_badge[1].upper()}")
-            previous = captured[-1][0] if captured else 0
-            st.progress(
-                min(1.0, max(0.0, (current_xp - previous) / (next_badge[0] - previous)))
-            )
-        else:
-            st.success("All current badges captured.")
-        if captured:
-            st.dataframe(
-                pd.DataFrame(captured, columns=["XP threshold", "Badge"]),
-                hide_index=True, width="stretch",
-            )
+        next_streak = next(
+            ((threshold, badge) for threshold, badge in STREAK_BADGE_LEVELS
+             if badge not in streak_names),
+            None,
+        )
+        left, right = st.columns(2)
+        with left:
+            st.subheader("XP badge countdown")
+            if next_xp:
+                st.write(
+                    f"{max(0, next_xp[0] - current_xp):,} XP to "
+                    f"{next_xp[1]}"
+                )
+            else:
+                st.success("All XP badges captured.")
+        with right:
+            st.subheader("Streak badge countdown")
+            if next_streak:
+                st.write(
+                    f"{max(0, next_streak[0] - current_streak)} days to "
+                    f"{next_streak[1]}"
+                )
+            else:
+                st.success("All Streak badges captured.")
+        if not captured_rows.empty:
+            st.dataframe(captured_rows, hide_index=True, width="stretch")
 
 
 def student_leaderboard_page() -> None:
@@ -2079,7 +2166,7 @@ def student_leaderboard_page() -> None:
             st.dataframe(
                 individuals[[
                     "Monthly Rank", "Overall Rank", "Student", "Class",
-                    "Monthly XP", "Overall XP",
+                    "Monthly XP", "Overall XP", "Current Streak", "Streak Badge",
                 ]].sort_values(["Monthly Rank", "Overall Rank", "Student"]),
                 hide_index=True, width="stretch",
             )
@@ -3384,10 +3471,16 @@ def analysis_xp_page() -> None:
     if individuals.empty:
         st.info("No XP records are available.")
         return
-    a, b, c = st.columns(3)
+    a, b, c, d = st.columns(4)
     with a: metric("Monthly XP", f"{int(individuals['Monthly XP'].sum()):,}", selected_month)
     with b: metric("Overall XP", f"{int(individuals['Overall XP'].sum()):,}", "Cumulative balance")
     with c: metric("Ranked students", str(len(individuals)), "Eligible individuals")
+    with d:
+        metric(
+            "Active streaks",
+            str(int((individuals["Current Streak"] > 0).sum())),
+            "Students currently active",
+        )
 
     monthly_tab, overall_tab, class_tab = st.tabs(
         ["Monthly individual", "Overall individual", "Class leaderboard"]
@@ -3399,6 +3492,7 @@ def analysis_xp_page() -> None:
             [
                 "Monthly Rank", "Student", "NO MATRIK", "Class",
                 "Monthly XP", "Overall XP", "Badge",
+                "Current Streak", "Streak Badge",
             ]
         ]
         st.dataframe(monthly, hide_index=True, width="stretch")
@@ -3407,6 +3501,7 @@ def analysis_xp_page() -> None:
             [
                 "Overall Rank", "Student", "NO MATRIK", "Class",
                 "Overall XP", "Monthly XP", "Badge",
+                "Current Streak", "Streak Badge",
             ]
         ]
         st.dataframe(overall, hide_index=True, width="stretch")
