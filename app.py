@@ -874,6 +874,12 @@ def extract_material_text(filename: str, data: bytes) -> str:
     raise ValueError("Quiz generation supports PDF, DOCX, PPTX, TXT, MD and CSV materials.")
 
 
+def sanitize_quiz_text(value: Any) -> str:
+    """Remove control characters that PostgreSQL text/JSON cannot store."""
+    text = str(value or "").replace("\x00", "")
+    return re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text).strip()
+
+
 def openai_api_key() -> str:
     """Read the server-side key without ever exposing it in the interface."""
     return str(
@@ -894,18 +900,21 @@ def generate_chapter_quiz_bank(
             "Secrets and restart the app.",
         )
     client = db()
+    created_quiz_id: int | None = None
     try:
         source_sections = []
         for _, material in materials.iterrows():
             file_path = str(material["file_path"])
             data = client.storage.from_("materials").download(file_path)
-            extracted = extract_material_text(file_path, data).strip()
+            extracted = sanitize_quiz_text(
+                extract_material_text(file_path, data)
+            )
             if extracted:
                 source_sections.append(
-                    f"### {material.get('title', Path(file_path).name)}\n"
+                    f"### {sanitize_quiz_text(material.get('title', Path(file_path).name))}\n"
                     f"{extracted}"
                 )
-        source_text = "\n\n".join(source_sections)
+        source_text = sanitize_quiz_text("\n\n".join(source_sections))
         if len(source_text) < 200:
             return (
                 False,
@@ -959,6 +968,11 @@ def generate_chapter_quiz_bank(
                 generated = response.output_parsed
                 unique_batch = []
                 for item in generated.questions:
+                    item.question = sanitize_quiz_text(item.question)
+                    item.options = [
+                        sanitize_quiz_text(option) for option in item.options
+                    ]
+                    item.explanation = sanitize_quiz_text(item.explanation)
                     normalized = re.sub(
                         r"\W+", " ", item.question.lower()
                     ).strip()
@@ -994,6 +1008,7 @@ def generate_chapter_quiz_bank(
             "generated_by_ai": True,
             "created_by": st.session_state.user["id"],
         }).execute().data[0]
+        created_quiz_id = int(quiz_row["id"])
         questions = [
             {
                 "quiz_id": quiz_row["id"],
@@ -1018,6 +1033,13 @@ def generate_chapter_quiz_bank(
             "40 easy, 100 medium and 60 hard.",
         )
     except Exception as exc:
+        if created_quiz_id is not None:
+            try:
+                client.table("quizzes").delete().eq(
+                    "id", created_quiz_id
+                ).execute()
+            except Exception:
+                pass
         return False, f"Quiz generation failed: {exc}"
 
 
