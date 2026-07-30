@@ -2843,8 +2843,18 @@ def award_xp_page() -> None:
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
 
-    sop_tab, badge_sop_tab, manual_tab, approval_tab, records_tab = st.tabs(
-        ["XP SOP", "BADGE SOP", "MANUAL AWARD", "APPROVE REQUEST", "EDIT & DELETE"]
+    events_fallback = pd.DataFrame([{
+        "id": 1, "NO MATRIK": "S24001", "rule_code": "consultation",
+        "points": 20, "reason": "Academic consultation",
+        "award_mode": "manual", "created_at": "2026-07-29T10:00:00+08:00",
+    }])
+    events, events_live = fetch_table("xp_events", events_fallback)
+
+    view_tab, sop_tab, badge_sop_tab, manual_tab, approval_tab, records_tab = st.tabs(
+        [
+            "VIEW", "XP SOP", "BADGE SOP", "MANUAL AWARD",
+            "APPROVE REQUEST", "EDIT & DELETE",
+        ]
     )
     with sop_tab:
         render_xp_sop()
@@ -2894,6 +2904,45 @@ def award_xp_page() -> None:
     rule_lookup = {
         str(row["code"]): row for _, row in rules.iterrows()
     } if not rules.empty else {}
+
+    with view_tab:
+        if events.empty:
+            st.info("No XP records are available.")
+        else:
+            shown_events = events.copy()
+            shown_events["Student"] = shown_events["NO MATRIK"].map(
+                identity_label
+            )
+            shown_events["Type"] = shown_events.get(
+                "rule_code", pd.Series(index=shown_events.index, dtype=str)
+            ).fillna("Unknown").astype(str).str.replace(
+                "_", " ", regex=False
+            ).str.title()
+            shown_events["Time"] = pd.to_datetime(
+                shown_events.get(
+                    "created_at",
+                    pd.Series(index=shown_events.index, dtype="datetime64[ns]"),
+                ),
+                errors="coerce", utc=True,
+            ).dt.tz_convert("Asia/Kuala_Lumpur").dt.strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            shown_events["Method"] = shown_events.get(
+                "award_mode", pd.Series(index=shown_events.index, dtype=str)
+            ).fillna("Unknown").astype(str).str.title()
+            visible_columns = [
+                column for column in [
+                    "Time", "Student", "Type", "points", "Method", "reason",
+                ] if column in shown_events.columns
+            ]
+            st.dataframe(
+                shown_events[visible_columns].rename(columns={
+                    "points": "XP",
+                    "reason": "Related / reason",
+                }).sort_values("Time", ascending=False),
+                hide_index=True,
+                width="stretch",
+            )
 
     with manual_tab:
         if not labels or not rule_lookup:
@@ -3001,12 +3050,6 @@ def award_xp_page() -> None:
                             st.info("Request rejected.")
                             st.rerun()
     with records_tab:
-        events_fallback = pd.DataFrame([{
-            "id": 1, "NO MATRIK": "S24001", "rule_code": "consultation",
-            "points": 20, "reason": "Academic consultation",
-            "award_mode": "manual", "created_at": "2026-07-29",
-        }])
-        events, events_live = fetch_table("xp_events", events_fallback)
         if events.empty or "id" not in events.columns:
             st.info("No XP records are available.")
         else:
@@ -3632,10 +3675,28 @@ def user_access_page() -> None:
         if users.empty:
             st.info("No users found.")
             return
+        visible_users = users.drop(columns=["id"], errors="ignore").copy()
+        visible_users["password"] = visible_users.apply(
+            lambda row: (
+                str(row.get("NO MATRIK"))
+                if (
+                    str(row.get("role", "")).lower() == "student"
+                    and pd.notna(row.get("NO MATRIK"))
+                    and pd.isna(row.get("password_changed_at"))
+                )
+                else "PROTECTED (HASHED)"
+            ),
+            axis=1,
+        )
         st.dataframe(
-            users.drop(columns=["id"], errors="ignore"),
+            visible_users,
             hide_index=True,
             width="stretch",
+        )
+        st.caption(
+            "Only an unchanged default student password can be shown because it "
+            "equals NO MATRIK. Changed passwords are securely hashed and cannot "
+            "be recovered; use Reset password to replace one."
         )
         user_ids = users["id"].astype(str).tolist()
         label_map = {
@@ -3654,8 +3715,18 @@ def user_access_page() -> None:
                 st.success("Account status updated.")
         new_password = c2.text_input("New temporary password", type="password")
         if c2.button("Reset password"):
-            if not valid_password(new_password):
-                st.error("Use at least 10 characters with uppercase, lowercase and a number.")
+            selected_role = str(selected_row.get("role", "")).lower()
+            password_is_valid = (
+                len(new_password) >= 8
+                if selected_role == "student"
+                else valid_password(new_password)
+            )
+            if not password_is_valid:
+                st.error(
+                    "Use at least 8 characters for a student password. Admin "
+                    "passwords require at least 10 characters with uppercase, "
+                    "lowercase and a number."
+                )
             else:
                 client.table("app_users").update({
                     "password_hash": hash_password(new_password),
