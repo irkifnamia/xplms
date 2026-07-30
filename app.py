@@ -857,7 +857,7 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Profile", "Materials", "My XP", "SOP", "Leaderboard",
+                "Profile", "Materials", "XP Journey", "SOP", "Leaderboard",
                 "Results", "Request XP", "Quiz"
             ],
             "Admin": [
@@ -900,7 +900,7 @@ def sidebar(role: str, name: str) -> str:
 def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
-            "Profile", "Materials", "My XP", "SOP", "Leaderboard",
+            "Profile", "Materials", "XP Journey", "SOP", "Leaderboard",
             "Results", "Request XP", "Quiz",
         ],
         "Admin": [
@@ -1992,7 +1992,7 @@ def sop_page() -> None:
 
 
 def my_xp_page() -> None:
-    heading("", "My XP")
+    heading("", "XP Journey")
     user = st.session_state.get("user", {})
     individuals, _, months, default_month = leaderboard_data()
     selected_month = st.selectbox(
@@ -2013,8 +2013,51 @@ def my_xp_page() -> None:
             history["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
         ]
 
-    history_tab, summary_tab, badge_tab = st.tabs(
-        ["XP HISTORY", "XP SUMMARY", "BADGE SUMMARY"]
+    earned, earned_live = fetch_table("student_badges", pd.DataFrame())
+    if earned_live and "NO MATRIK" in earned.columns:
+        earned = earned[
+            earned["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
+        ]
+    current_streak = int(row.get("Current Streak", 0)) if row is not None else 0
+    if earned_live and not earned.empty:
+        if "badge_family" in earned.columns:
+            xp_names = set(
+                earned.loc[earned["badge_family"] == "xp", "badge_name"].astype(str)
+            )
+            streak_names = set(
+                earned.loc[
+                    earned["badge_family"] == "streak", "badge_name"
+                ].astype(str)
+            )
+        else:
+            xp_names = set(earned.get("badge_name", pd.Series(dtype=str)).astype(str))
+            streak_names: set[str] = set()
+    else:
+        xp_names = {
+            badge for threshold, badge in BADGE_LEVELS
+            if current_xp >= threshold
+        }
+        streak_names = {
+            badge for threshold, badge in STREAK_BADGE_LEVELS
+            if current_streak >= threshold
+        }
+
+    def badge_checklist(
+        levels: list[tuple[int, str]],
+        captured_names: set[str],
+        unit: str,
+    ) -> pd.DataFrame:
+        return pd.DataFrame([
+            {
+                "Badge": badge,
+                "Requirement": f"{threshold:,} {unit}",
+                "Status": "CAPTURED" if badge in captured_names else "LOCKED",
+            }
+            for threshold, badge in levels
+        ])
+
+    history_tab, xp_tab, streak_tab = st.tabs(
+        ["XP HISTORY", "MY XP", "MY STREAK"]
     )
     with history_tab:
         if history.empty:
@@ -2029,84 +2072,71 @@ def my_xp_page() -> None:
                 history[visible].sort_values("created_at", ascending=False),
                 hide_index=True, width="stretch",
             )
-    with summary_tab:
+    with xp_tab:
         if row is None:
-            st.info("XP summary is not available.")
+            st.info("XP journey is not available.")
         else:
-            a, b, c, d = st.columns(4)
-            with a: metric("Monthly XP", f"{int(row['Monthly XP']):,}")
-            with b: metric("Overall XP", f"{int(row['Overall XP']):,}")
-            with c: metric("Monthly rank", f"#{int(row['Monthly Rank'])}")
-            with d: metric("Overall rank", f"#{int(row['Overall Rank'])}")
-    with badge_tab:
-        earned, earned_live = fetch_table("student_badges", pd.DataFrame())
-        if earned_live and "NO MATRIK" in earned.columns:
-            earned = earned[
-                earned["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
+            captured_xp = [
+                (threshold, badge) for threshold, badge in BADGE_LEVELS
+                if badge in xp_names
             ]
-        current_streak = int(row.get("Current Streak", 0)) if row is not None else 0
-        if earned_live and "badge_family" in earned.columns:
-            xp_captured = earned[earned["badge_family"] == "xp"]
-            streak_captured = earned[earned["badge_family"] == "streak"]
-            captured_rows = earned[[
-                column for column in [
-                    "badge_family", "badge_name", "xp_threshold",
-                    "streak_threshold", "earned_at",
-                ] if column in earned.columns
-            ]].copy()
-        else:
-            xp_captured = pd.DataFrame([
-                {"badge_name": badge, "xp_threshold": threshold}
-                for threshold, badge in BADGE_LEVELS if current_xp >= threshold
-            ])
-            streak_captured = pd.DataFrame([
-                {"badge_name": badge, "streak_threshold": threshold}
-                for threshold, badge in STREAK_BADGE_LEVELS
-                if current_streak >= threshold
-            ])
-            captured_rows = pd.concat([
-                xp_captured.assign(badge_family="xp"),
-                streak_captured.assign(badge_family="streak"),
-            ], ignore_index=True)
-        a, b, c = st.columns(3)
-        with a: metric("Current streak", f"{current_streak} days")
-        with b: metric("XP badges", str(len(xp_captured)))
-        with c: metric("Streak badges", str(len(streak_captured)))
-        xp_names = set(xp_captured.get("badge_name", pd.Series(dtype=str)))
-        next_xp = next(
-            ((threshold, badge) for threshold, badge in BADGE_LEVELS
-             if badge not in xp_names),
-            None,
-        )
-        streak_names = set(
-            streak_captured.get("badge_name", pd.Series(dtype=str))
+            current_badge = captured_xp[-1][1] if captured_xp else "None"
+            next_xp = next(
+                (
+                    (threshold, badge) for threshold, badge in BADGE_LEVELS
+                    if badge not in xp_names
+                ),
+                None,
+            )
+            a, b, c = st.columns(3)
+            with a: metric("Current XP", f"{current_xp:,}")
+            with b: metric("Current XP badge", current_badge)
+            with c:
+                metric(
+                    "Next XP badge",
+                    (
+                        f"{max(0, next_xp[0] - current_xp):,} XP"
+                        if next_xp else "Complete"
+                    ),
+                    next_xp[1] if next_xp else "All levels captured",
+                )
+            st.subheader("XP badge checklist")
+            st.dataframe(
+                badge_checklist(BADGE_LEVELS, xp_names, "XP"),
+                hide_index=True, width="stretch",
+            )
+    with streak_tab:
+        captured_streak = [
+            (threshold, badge) for threshold, badge in STREAK_BADGE_LEVELS
+            if badge in streak_names
+        ]
+        current_streak_badge = (
+            captured_streak[-1][1] if captured_streak else "None"
         )
         next_streak = next(
-            ((threshold, badge) for threshold, badge in STREAK_BADGE_LEVELS
-             if badge not in streak_names),
+            (
+                (threshold, badge) for threshold, badge in STREAK_BADGE_LEVELS
+                if badge not in streak_names
+            ),
             None,
         )
-        left, right = st.columns(2)
-        with left:
-            st.subheader("XP badge countdown")
-            if next_xp:
-                st.write(
-                    f"{max(0, next_xp[0] - current_xp):,} XP to "
-                    f"{next_xp[1]}"
-                )
-            else:
-                st.success("All XP badges captured.")
-        with right:
-            st.subheader("Streak badge countdown")
-            if next_streak:
-                st.write(
-                    f"{max(0, next_streak[0] - current_streak)} days to "
-                    f"{next_streak[1]}"
-                )
-            else:
-                st.success("All Streak badges captured.")
-        if not captured_rows.empty:
-            st.dataframe(captured_rows, hide_index=True, width="stretch")
+        a, b, c = st.columns(3)
+        with a: metric("Current streak", f"{current_streak} days")
+        with b: metric("Current streak badge", current_streak_badge)
+        with c:
+            metric(
+                "Next streak badge",
+                (
+                    f"{max(0, next_streak[0] - current_streak)} days"
+                    if next_streak else "Complete"
+                ),
+                next_streak[1] if next_streak else "All levels captured",
+            )
+        st.subheader("Streak badge checklist")
+        st.dataframe(
+            badge_checklist(STREAK_BADGE_LEVELS, streak_names, "days"),
+            hide_index=True, width="stretch",
+        )
 
 
 def student_leaderboard_page() -> None:
@@ -4233,7 +4263,7 @@ def main() -> None:
             "Results": progress_page,
             "Materials": materials_page,
             "Quiz": quiz_page,
-            "My XP": my_xp_page,
+            "XP Journey": my_xp_page,
             "SOP": sop_page,
             "Leaderboard": student_leaderboard_page,
             "Profile": profile_page,
