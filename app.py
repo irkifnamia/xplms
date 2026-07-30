@@ -50,6 +50,28 @@ class GeneratedQuiz(BaseModel):
 
 LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.png"
 AFJ_LOGO_PATH = Path(__file__).parent / "assets" / "afj.jpeg"
+BADGE_ASSET_DIR = Path(__file__).parent / "assets" / "badges"
+BADGE_IMAGE_PATHS = {
+    "xp": {
+        "Rookie": BADGE_ASSET_DIR / "xp-rookie.png",
+        "Explorer": BADGE_ASSET_DIR / "xp-explorer.png",
+        "Expert": BADGE_ASSET_DIR / "xp-expert.png",
+        "Legend": BADGE_ASSET_DIR / "xp-legend.png",
+    },
+    "streak": {
+        "Rookie": BADGE_ASSET_DIR / "streak-rookie-flame.png",
+        "Explorer": BADGE_ASSET_DIR / "streak-explorer-flame.png",
+        "Expert": BADGE_ASSET_DIR / "streak-expert-flame.png",
+        "Legend": BADGE_ASSET_DIR / "streak-legend-flame.png",
+    },
+}
+BADGE_IMAGE_DATA = {
+    family: {
+        name: base64.b64encode(path.read_bytes()).decode("ascii")
+        for name, path in paths.items()
+    }
+    for family, paths in BADGE_IMAGE_PATHS.items()
+}
 LOGO_IMAGE = Image.open(LOGO_PATH)
 LOGO_DATA = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
 
@@ -244,6 +266,55 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
 .metric-label { color:var(--muted); font-size:.79rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
 .metric-value { color:#17233a; font-family:'Manrope'; font-size:1.7rem; font-weight:800; margin:.15rem 0; }
 .metric-note { color:var(--muted); font-size:.82rem; }
+.badge-grid {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:14px;
+  margin:.5rem 0 1rem;
+}
+.badge-card {
+  position:relative;
+  overflow:hidden;
+  min-width:0;
+  padding:14px 12px 13px;
+  text-align:center;
+  background:linear-gradient(150deg,#fff 10%,#eef6ff 100%);
+  border:1px solid #c8d8eb;
+  border-top:4px solid var(--brand);
+  border-radius:18px;
+  box-shadow:0 5px 16px rgba(31,93,170,.08);
+}
+.badge-card:nth-child(2) { border-top-color:#12a7a0; }
+.badge-card:nth-child(3) { border-top-color:#3988dc; }
+.badge-card:nth-child(4) { border-top-color:#8b62b6; }
+.badge-card img {
+  display:block;
+  width:min(100%,150px);
+  aspect-ratio:1;
+  object-fit:contain;
+  margin:0 auto 8px;
+  filter:drop-shadow(0 5px 7px rgba(16,37,67,.17));
+}
+.badge-card.locked img { filter:grayscale(.92); opacity:.3; }
+.badge-card.locked { background:#f6f8fb; border-color:#d8dee7; }
+.badge-name { color:var(--ink); font-size:.92rem; font-weight:800; text-transform:uppercase; }
+.badge-requirement { color:var(--muted); font-size:.76rem; margin:3px 0 8px; }
+.badge-status {
+  display:inline-block;
+  padding:3px 9px;
+  color:#126543;
+  background:#dcf5e9;
+  border:1px solid #a8dfc7;
+  border-radius:999px;
+  font-size:.68rem;
+  font-weight:800;
+  letter-spacing:.05em;
+}
+.badge-card.locked .badge-status {
+  color:#687487;
+  background:#eef1f5;
+  border-color:#d7dce4;
+}
 .result-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
 .result-card { background:#fff; border:1px solid var(--line); border-top:4px solid var(--brand);
   border-radius:16px; padding:17px 18px; box-shadow:0 4px 14px rgba(31,93,170,.07); }
@@ -520,6 +591,11 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
     font-size:.78rem;
   }
   .result-grid { grid-template-columns:1fr; gap:10px; }
+  .badge-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  .badge-card { padding:10px 7px 11px; border-radius:14px; }
+  .badge-card img { width:min(100%,112px); margin-bottom:6px; }
+  .badge-name { font-size:.78rem; }
+  .badge-requirement { font-size:.68rem; }
   body:has(.student-sidebar-marker) button {
     min-height:2.75rem;
     font-size:.88rem;
@@ -2072,6 +2148,35 @@ def sop_page() -> None:
         render_badge_sop()
 
 
+def render_badge_cards(
+    family: str,
+    levels: list[tuple[int, str]],
+    captured_names: set[str],
+    unit: str,
+) -> None:
+    """Render a responsive, visual badge progression grid."""
+    cards = []
+    for threshold, badge in levels:
+        captured = badge in captured_names
+        state_class = "" if captured else " locked"
+        status = "CAPTURED" if captured else "LOCKED"
+        requirement = f"{threshold:,} {unit}"
+        image_data = BADGE_IMAGE_DATA[family][badge]
+        cards.append(
+            f'<div class="badge-card{state_class}">'
+            f'<img src="data:image/png;base64,{image_data}" '
+            f'alt="{html.escape(f"{family} {badge} badge")}">'
+            f'<div class="badge-name">{html.escape(badge)}</div>'
+            f'<div class="badge-requirement">{html.escape(requirement)}</div>'
+            f'<span class="badge-status">{status}</span>'
+            "</div>"
+        )
+    st.markdown(
+        f'<div class="badge-grid">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def my_xp_page() -> None:
     heading("", "XP Journey")
     user = st.session_state.get("user", {})
@@ -2150,20 +2255,6 @@ def my_xp_page() -> None:
             if current_streak >= threshold
         }
 
-    def badge_checklist(
-        levels: list[tuple[int, str]],
-        captured_names: set[str],
-        unit: str,
-    ) -> pd.DataFrame:
-        return pd.DataFrame([
-            {
-                "Badge": badge,
-                "Requirement": f"{threshold:,} {unit}",
-                "Status": "CAPTURED" if badge in captured_names else "LOCKED",
-            }
-            for threshold, badge in levels
-        ])
-
     history_tab, xp_tab, streak_tab = st.tabs(
         ["XP HISTORY", "MY XP", "MY STREAK"]
     )
@@ -2206,10 +2297,7 @@ def my_xp_page() -> None:
                 next_xp[1] if next_xp else "All levels captured",
             )
         st.subheader("XP badge checklist")
-        st.dataframe(
-            badge_checklist(BADGE_LEVELS, xp_names, "XP"),
-            hide_index=True, width="stretch",
-        )
+        render_badge_cards("xp", BADGE_LEVELS, xp_names, "XP")
     with streak_tab:
         captured_streak = [
             (threshold, badge) for threshold, badge in STREAK_BADGE_LEVELS
@@ -2238,9 +2326,8 @@ def my_xp_page() -> None:
                 next_streak[1] if next_streak else "All levels captured",
             )
         st.subheader("Streak badge checklist")
-        st.dataframe(
-            badge_checklist(STREAK_BADGE_LEVELS, streak_names, "days"),
-            hide_index=True, width="stretch",
+        render_badge_cards(
+            "streak", STREAK_BADGE_LEVELS, streak_names, "days"
         )
 
 
