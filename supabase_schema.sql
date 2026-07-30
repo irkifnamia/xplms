@@ -100,7 +100,7 @@ create table if not exists public.xp_rules (
 
 insert into public.xp_rules (code, name, description, award_mode, default_points)
 values
-  ('consultation', 'Consultation', 'Constructive academic consultation outside normal class activity.', 'manual', 20),
+  ('consultation', 'Consultation', 'Constructive academic consultation outside normal class activity.', 'manual', 15),
   ('class_participation', 'Class participation', 'Meaningful contribution during a class session.', 'manual', 10),
   ('discipline', 'Discipline and professionalism', 'Consistent discipline, punctuality or professional conduct.', 'manual', 10),
   ('quiz_completion', 'In-app quiz', 'Successfully completed in-app quiz.', 'automatic', 25),

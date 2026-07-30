@@ -2196,7 +2196,7 @@ def render_xp_streak_sop() -> None:
         {
             "XP event": "Consultation",
             "Method": "Admin manual award / Student request → Admin approval",
-            "Points": "20 XP default",
+            "Points": "15 XP default",
             "Daily request quota": "—",
         },
         {
@@ -3089,8 +3089,180 @@ def admin_quiz_page() -> None:
                         )
                     (st.success if ok else st.error)(message)
 
+    quizzes, quiz_live = fetch_table("quizzes", pd.DataFrame())
+    if (
+        quiz_live
+        and not quizzes.empty
+        and "reviewed_at" not in quizzes.columns
+    ):
+        st.error(
+            "Run supabase_migration_015_quiz_review_consultation_xp.sql "
+            "before reviewing or publishing question banks."
+        )
+        return
+    st.subheader("Question bank review")
+    drafts = (
+        quizzes[quizzes["status"] == "draft"].copy()
+        if not quizzes.empty and "status" in quizzes.columns
+        else pd.DataFrame()
+    )
+    if drafts.empty:
+        st.info("No draft question bank is awaiting review.")
+    elif not quiz_live:
+        st.info("Question review is read-only in demo mode.")
+    else:
+        draft_labels = {
+            int(row["id"]): (
+                f"C{row.get('chapter', '—')} · {row.get('title', 'Draft bank')}"
+            )
+            for _, row in drafts.iterrows()
+        }
+        review_quiz_id = st.selectbox(
+            "Draft bank to review",
+            list(draft_labels),
+            format_func=lambda value: draft_labels[value],
+        )
+        try:
+            review_rows = db().table("quiz_questions").select("*").eq(
+                "quiz_id", review_quiz_id
+            ).order("position").execute().data
+            review_frame = pd.DataFrame(review_rows)
+        except Exception as exc:
+            st.error(
+                "Question review is unavailable. Run migration 015 first. "
+                f"Details: {exc}"
+            )
+            review_frame = pd.DataFrame()
+
+        if not review_frame.empty:
+            difficulty_filter = st.segmented_control(
+                "Review difficulty",
+                ["all", "easy", "medium", "hard"],
+                default="all",
+                format_func=str.upper,
+            )
+            shown_review = review_frame
+            if difficulty_filter != "all":
+                shown_review = review_frame[
+                    review_frame["difficulty"] == difficulty_filter
+                ]
+            review_columns = [
+                column for column in [
+                    "position", "difficulty", "question", "options",
+                    "correct_index", "explanation", "review_status",
+                ] if column in shown_review.columns
+            ]
+            st.dataframe(
+                shown_review[review_columns],
+                hide_index=True,
+                width="stretch",
+                height=360,
+            )
+
+            question_labels = {
+                int(row["id"]): (
+                    f"Q{int(row.get('position', 0))} · "
+                    f"{str(row.get('difficulty', '')).upper()} · "
+                    f"{str(row.get('question', ''))[:80]}"
+                )
+                for _, row in review_frame.iterrows()
+            }
+            edit_question_id = st.selectbox(
+                "Question to inspect or edit",
+                list(question_labels),
+                format_func=lambda value: question_labels[value],
+            )
+            selected_question = review_frame[
+                review_frame["id"].astype(int) == int(edit_question_id)
+            ].iloc[0]
+            saved_options = selected_question.get("options", [])
+            if isinstance(saved_options, str):
+                saved_options = json.loads(saved_options)
+            saved_options = list(saved_options)
+            while len(saved_options) < 4:
+                saved_options.append("")
+            with st.form("review_question_form"):
+                edited_question = st.text_area(
+                    "Question", value=str(selected_question["question"])
+                )
+                edited_options = [
+                    st.text_input(
+                        f"Option {letter}",
+                        value=str(saved_options[index]),
+                    )
+                    for index, letter in enumerate(("A", "B", "C", "D"))
+                ]
+                edited_correct = st.selectbox(
+                    "Correct answer",
+                    range(4),
+                    index=int(selected_question["correct_index"]),
+                    format_func=lambda value: ("A", "B", "C", "D")[value],
+                )
+                edited_explanation = st.text_area(
+                    "Explanation",
+                    value=str(selected_question["explanation"]),
+                )
+                if st.form_submit_button("Save reviewed question"):
+                    if (
+                        not edited_question.strip()
+                        or not edited_explanation.strip()
+                        or any(not option.strip() for option in edited_options)
+                    ):
+                        st.error("Complete the question, all options and explanation.")
+                    elif len({option.strip() for option in edited_options}) != 4:
+                        st.error("All four answer options must be different.")
+                    else:
+                        try:
+                            db().table("quiz_questions").update({
+                                "question": edited_question.strip(),
+                                "options": [
+                                    option.strip() for option in edited_options
+                                ],
+                                "correct_index": int(edited_correct),
+                                "explanation": edited_explanation.strip(),
+                                "review_status": "pending",
+                                "reviewed_at": None,
+                                "reviewed_by": None,
+                            }).eq("id", edit_question_id).execute()
+                            db().table("quizzes").update({
+                                "reviewed_at": None,
+                                "reviewed_by": None,
+                            }).eq("id", review_quiz_id).execute()
+                            st.success("Question saved. Re-approve the bank when review is complete.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Question could not be saved: {exc}")
+
+            counts = review_frame["difficulty"].value_counts().to_dict()
+            distribution_valid = counts == QUIZ_BANK_DISTRIBUTION
+            reviewed_confirm = st.checkbox(
+                "I have reviewed all questions, answers and explanations.",
+                key=f"approve_bank_confirm_{review_quiz_id}",
+            )
+            if st.button(
+                "Approve complete question bank",
+                type="primary",
+                disabled=not reviewed_confirm or not distribution_valid,
+                key=f"approve_bank_{review_quiz_id}",
+            ):
+                try:
+                    reviewed_at = datetime.now().isoformat()
+                    reviewer = st.session_state.user["id"]
+                    db().table("quiz_questions").update({
+                        "review_status": "approved",
+                        "reviewed_at": reviewed_at,
+                        "reviewed_by": reviewer,
+                    }).eq("quiz_id", review_quiz_id).execute()
+                    db().table("quizzes").update({
+                        "reviewed_at": reviewed_at,
+                        "reviewed_by": reviewer,
+                    }).eq("id", review_quiz_id).execute()
+                    st.success("All 200 questions were approved and saved in Supabase.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Question bank could not be approved: {exc}")
+
     st.subheader("Quiz library")
-    quizzes, _ = fetch_table("quizzes", pd.DataFrame())
     if quizzes.empty:
         st.info("No quizzes created yet.")
         return
@@ -3104,18 +3276,24 @@ def admin_quiz_page() -> None:
                 f"{quiz.get('target_question_count', 200)} questions"
             )
             if quiz["status"] == "draft" and right.button(
-                "Publish", key=f"admin_publish_quiz_{quiz['id']}"
+                "Publish",
+                key=f"admin_publish_quiz_{quiz['id']}",
+                disabled=pd.isna(quiz.get("reviewed_at")),
             ):
                 try:
                     chapter = int(quiz["chapter"])
                     question_rows = db().table("quiz_questions").select(
-                        "difficulty"
+                        "difficulty,review_status"
                     ).eq("quiz_id", quiz["id"]).execute().data
+                    approved_rows = pd.DataFrame(question_rows)
+                    approved_rows = approved_rows[
+                        approved_rows["review_status"] == "approved"
+                    ] if not approved_rows.empty else approved_rows
                     counts = (
-                        pd.DataFrame(question_rows)["difficulty"]
+                        approved_rows["difficulty"]
                         .value_counts()
                         .to_dict()
-                        if question_rows else {}
+                        if not approved_rows.empty else {}
                     )
                     if counts != QUIZ_BANK_DISTRIBUTION:
                         st.error(
@@ -3149,6 +3327,12 @@ def quiz_page() -> None:
     today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
     quizzes, quizzes_live = fetch_table("quizzes", pd.DataFrame())
     live = quizzes_live
+    if not live and not is_demo():
+        st.error(
+            "The quiz service cannot read published question banks from "
+            "Supabase right now. Please try again later."
+        )
+        return
 
     if live:
         required_quiz_columns = {"id", "chapter", "status"}
@@ -3235,6 +3419,7 @@ def quiz_page() -> None:
                 client.table("quiz_questions")
                 .select("*")
                 .eq("quiz_id", quiz_id)
+                .eq("review_status", "approved")
                 .execute()
                 .data
             )
@@ -3377,7 +3562,7 @@ def _legacy_award_xp_page() -> None:
     students, students_live = merged_students()
     rules_fallback = pd.DataFrame(
         [
-            {"code": "consultation", "name": "Consultation", "default_points": 20, "award_mode": "manual"},
+            {"code": "consultation", "name": "Consultation", "default_points": 15, "award_mode": "manual"},
             {"code": "class_participation", "name": "Class participation", "default_points": 10, "award_mode": "manual"},
             {"code": "commitment", "name": "Commitment", "default_points": 10, "award_mode": "manual"},
         ]
@@ -3545,7 +3730,7 @@ def award_xp_page() -> None:
     heading("", "Award XP")
     students, students_live = merged_students()
     rules_fallback = pd.DataFrame([
-        {"code": "consultation", "name": "Consultation", "default_points": 20},
+        {"code": "consultation", "name": "Consultation", "default_points": 15},
         {"code": "class_participation", "name": "Class participation", "default_points": 10},
         {"code": "commitment", "name": "Commitment", "default_points": 10},
     ])
