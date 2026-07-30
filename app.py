@@ -8,6 +8,7 @@ import io
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -533,8 +534,8 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 DEMO_STUDENTS = pd.DataFrame(
     [
-        {"student_id": "S24001", "name": "Alya Sofea", "programme": "Digital Technology", "cohort": "2024", "email": "alya@example.edu"},
-        {"student_id": "S24002", "name": "Haziq Amir", "programme": "Digital Technology", "cohort": "2024", "email": "haziq@example.edu"},
+        {"student_id": "S24001", "name": "Alya Sofea", "programme": "Digital Technology", "cohort": "2024", "email": "alya@example.edu", "XPTEAM": "J1T2(A)"},
+        {"student_id": "S24002", "name": "Haziq Amir", "programme": "Digital Technology", "cohort": "2024", "email": "haziq@example.edu", "XPTEAM": "J1T2(A)"},
         {"student_id": "S24003", "name": "Mei Lin", "programme": "Information Systems", "cohort": "2024", "email": "meilin@example.edu"},
         {"student_id": "S24004", "name": "Arjun Kumar", "programme": "Information Systems", "cohort": "2024", "email": "arjun@example.edu"},
         {"student_id": "S24005", "name": "Nur Iman", "programme": "Digital Technology", "cohort": "2024", "email": "iman@example.edu"},
@@ -1042,6 +1043,18 @@ def merged_students() -> tuple[pd.DataFrame, bool]:
     xp_key = next((x for x in ["NO MATRIK", "student_id", "stud_id", "id"] if x in merged.columns and x in xp.columns), None)
     if xp_key:
         merged = merged.merge(xp, on=xp_key, how="left")
+    team_columns = [
+        column for column in ["XPTEAM_x", "XPTEAM", "XPTEAM_y"]
+        if column in merged.columns
+    ]
+    if team_columns:
+        team = merged[team_columns[0]]
+        for column in team_columns[1:]:
+            team = team.combine_first(merged[column])
+        merged["XPTEAM"] = team.fillna("Unassigned").astype(str)
+        merged = merged.drop(
+            columns=[column for column in ["XPTEAM_x", "XPTEAM_y"] if column in merged.columns]
+        )
     if "XP" in merged.columns:
         merged["xp"] = pd.to_numeric(merged["XP"], errors="coerce").fillna(0)
         merged = merged.drop(columns=["XP"])
@@ -1201,6 +1214,11 @@ def leaderboard_data(
         "Class": (
             merged[class_col].fillna("Unassigned").astype(str)
             if class_col
+            else "Unassigned"
+        ),
+        "XPTEAM": (
+            merged["XPTEAM"].replace("", "Unassigned").fillna("Unassigned").astype(str)
+            if "XPTEAM" in merged.columns
             else "Unassigned"
         ),
     })
@@ -1943,7 +1961,7 @@ def student_leaderboard_page() -> None:
         if c in merged.columns and c not in excluded
     ]
     assessment = st.selectbox(
-        "Progress assessment", assessments,
+        "Test", assessments,
         key="student_leaderboard_assessment",
     ) if assessments else None
     individual_progress, class_progress = (
@@ -1962,9 +1980,32 @@ def student_leaderboard_page() -> None:
             class_progress["Class"].astype(str) == selected_class
         ]
 
-    xp_individual, xp_class, progress_individual, progress_class = st.tabs([
+    teams = (
+        individuals.groupby("XPTEAM", dropna=False)
+        .agg(
+            Students=("Student", "count"),
+            **{
+                "Monthly XP Average": ("Monthly XP", "mean"),
+                "Monthly XP Total": ("Monthly XP", "sum"),
+                "Overall XP Average": ("Overall XP", "mean"),
+                "Overall XP Total": ("Overall XP", "sum"),
+            },
+        )
+        .reset_index()
+        if not individuals.empty and "XPTEAM" in individuals.columns
+        else pd.DataFrame()
+    )
+    if not teams.empty:
+        teams["Monthly Rank"] = teams["Monthly XP Average"].rank(
+            method="min", ascending=False
+        ).astype(int)
+        teams["Overall Rank"] = teams["Overall XP Average"].rank(
+            method="min", ascending=False
+        ).astype(int)
+
+    xp_individual, xp_class, xp_team, progress_individual, progress_class = st.tabs([
         "XP (IND)", "XP (CLASS)",
-        "PROG (IND)", "PROG (CLASS)",
+        "XP (XPTEAM)", "TEST (IND)", "TEST (CLASS)",
     ])
     with xp_individual:
         if individuals.empty:
@@ -1984,8 +2025,21 @@ def student_leaderboard_page() -> None:
             st.dataframe(
                 classes[[
                     "Monthly Rank", "Overall Rank", "Class", "Students",
-                    "Monthly XP Average", "Overall XP Average",
+                    "Monthly XP Average", "Monthly XP Total",
+                    "Overall XP Average", "Overall XP Total",
                 ]].sort_values(["Monthly Rank", "Overall Rank", "Class"]),
+                hide_index=True, width="stretch",
+            )
+    with xp_team:
+        if teams.empty:
+            st.info("XPTEAM leaderboard is not available.")
+        else:
+            st.dataframe(
+                teams[[
+                    "Monthly Rank", "Overall Rank", "XPTEAM", "Students",
+                    "Monthly XP Average", "Monthly XP Total",
+                    "Overall XP Average", "Overall XP Total",
+                ]].sort_values(["Monthly Rank", "Overall Rank", "XPTEAM"]),
                 hide_index=True, width="stretch",
             )
     with progress_individual:
@@ -2019,7 +2073,8 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
     material_types = ["Infographic", "Notes", "Exercise", "Extra", "Reference", "Other"]
 
     if lecturer:
-        with st.expander("Upload new material"):
+        upload_tab, manage_tab = st.tabs(["UPLOAD", "EDIT & DELETE"])
+        with upload_tab:
             with st.form("material_upload"):
                 title = st.text_input("Resource title")
                 course = st.text_input("Course or subject", value="Mathematics")
@@ -2034,12 +2089,19 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                     material_types,
                     default=material_types[0],
                 )
-                file = st.file_uploader("File", type=["pdf", "docx", "pptx", "xlsx", "txt", "md", "csv", "zip"])
+                files = st.file_uploader(
+                    "Files",
+                    type=[
+                        "pdf", "docx", "pptx", "xlsx", "txt", "md", "csv", "zip",
+                        "jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff",
+                    ],
+                    accept_multiple_files=True,
+                )
                 if st.form_submit_button("Share with students", type="primary"):
                     if not title.strip():
                         st.error("Enter a resource title.")
-                    elif not file:
-                        st.error("Choose a file.")
+                    elif not files:
+                        st.error("Choose at least one file.")
                     else:
                         client = db()
                         try:
@@ -2047,17 +2109,26 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                         except Exception:
                             st.error("Run supabase_migration_005_material_classification.sql before uploading materials.")
                         else:
-                            storage_path = (
-                                f"chapter-{chapter}/{material_type.lower()}/"
-                                f"{datetime.now().timestamp()}-{file.name}"
-                            )
-                            ok, path = upload_file(
-                                "materials", storage_path, file.getvalue(), file.type
-                            )
-                            if ok:
-                                saved, message = upsert_rows(
-                                    "materials",
-                                    pd.DataFrame([{
+                            uploaded_paths: list[str] = []
+                            rows: list[dict[str, Any]] = []
+                            error_message = ""
+                            for index, file in enumerate(files):
+                                safe_name = re.sub(
+                                    r"[^A-Za-z0-9._-]+", "-", file.name
+                                ).strip("-") or f"file-{index + 1}"
+                                storage_path = (
+                                    f"chapter-{chapter}/{material_type.lower()}/"
+                                    f"{datetime.now().timestamp()}-{index}-{safe_name}"
+                                )
+                                ok, path = upload_file(
+                                    "materials", storage_path, file.getvalue(),
+                                    file.type or "application/octet-stream",
+                                )
+                                if not ok:
+                                    error_message = path
+                                    break
+                                uploaded_paths.append(path)
+                                rows.append({
                                         "title": title.strip(),
                                         "course": course.strip() or "Mathematics",
                                         "chapter": int(chapter),
@@ -2065,15 +2136,110 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                                         "file_path": path,
                                         "type": file.name.rsplit(".", 1)[-1].upper(),
                                         "lecturer_id": st.session_state.user["id"],
-                                    }]),
+                                })
+                            if error_message:
+                                if uploaded_paths:
+                                    try:
+                                        client.storage.from_("materials").remove(uploaded_paths)
+                                    except Exception:
+                                        pass
+                                st.error(error_message)
+                            else:
+                                saved, message = upsert_rows(
+                                    "materials", pd.DataFrame(rows)
                                 )
                                 if saved:
-                                    st.success("Material shared with students.")
+                                    st.success(
+                                        f"{len(rows)} file(s) shared with students."
+                                    )
                                     st.rerun()
                                 else:
+                                    try:
+                                        client.storage.from_("materials").remove(uploaded_paths)
+                                    except Exception:
+                                        pass
                                     st.error(message)
-                            else:
-                                st.error(path)
+        with manage_tab:
+            if materials.empty or "id" not in materials.columns:
+                st.info("No uploaded materials are available to manage.")
+            else:
+                material_labels = {
+                    row["id"]: (
+                        f"{row.get('title', 'Untitled')} · "
+                        f"{Path(str(row.get('file_path', 'file'))).name}"
+                    )
+                    for _, row in materials.iterrows()
+                }
+                selected_id = st.selectbox(
+                    "Material entry",
+                    list(material_labels),
+                    format_func=lambda value: material_labels[value],
+                    key="manage_material_id",
+                )
+                selected = materials[materials["id"] == selected_id].iloc[0]
+                with st.form("edit_material"):
+                    edited_title = st.text_input(
+                        "Resource title", value=str(selected.get("title", ""))
+                    )
+                    edited_course = st.text_input(
+                        "Course or subject", value=str(selected.get("course", "Mathematics"))
+                    )
+                    current_chapter = pd.to_numeric(
+                        pd.Series([selected.get("chapter")]), errors="coerce"
+                    ).iloc[0]
+                    edited_chapter = st.selectbox(
+                        "Chapter", chapters,
+                        index=chapters.index(int(current_chapter))
+                        if pd.notna(current_chapter) and int(current_chapter) in chapters
+                        else 0,
+                        format_func=lambda value: f"C{value}",
+                    )
+                    current_type = str(selected.get("material_type", material_types[0]))
+                    edited_type = st.selectbox(
+                        "Material type", material_types,
+                        index=material_types.index(current_type)
+                        if current_type in material_types else 0,
+                    )
+                    if st.form_submit_button("Save changes", type="primary"):
+                        if not edited_title.strip():
+                            st.error("Enter a resource title.")
+                        elif not live:
+                            st.info("Demo mode is read-only.")
+                        else:
+                            try:
+                                db().table("materials").update({
+                                    "title": edited_title.strip(),
+                                    "course": edited_course.strip() or "Mathematics",
+                                    "chapter": int(edited_chapter),
+                                    "material_type": edited_type,
+                                }).eq("id", selected_id).execute()
+                                st.success("Material details updated.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Material could not be updated: {exc}")
+                confirm_delete = st.checkbox(
+                    "I understand this permanently deletes the uploaded file.",
+                    key=f"confirm_material_delete_{selected_id}",
+                )
+                if st.button(
+                    "Delete material", type="primary",
+                    disabled=not confirm_delete,
+                    key=f"delete_material_{selected_id}",
+                ):
+                    if not live:
+                        st.info("Demo mode is read-only.")
+                    else:
+                        try:
+                            file_path = str(selected.get("file_path", "")).strip()
+                            db().table("materials").delete().eq(
+                                "id", selected_id
+                            ).execute()
+                            if file_path:
+                                db().storage.from_("materials").remove([file_path])
+                            st.success("Material and its stored file were deleted.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Material could not be deleted: {exc}")
 
     filter_a, filter_b = st.columns(2)
     with filter_a:
@@ -2593,8 +2759,8 @@ def award_xp_page() -> None:
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
 
-    sop_tab, badge_sop_tab, manual_tab, approval_tab = st.tabs(
-        ["XP SOP", "BADGE SOP", "MANUAL AWARD", "APPROVE REQUEST"]
+    sop_tab, badge_sop_tab, manual_tab, approval_tab, records_tab = st.tabs(
+        ["XP SOP", "BADGE SOP", "MANUAL AWARD", "APPROVE REQUEST", "EDIT & DELETE"]
     )
     with sop_tab:
         render_xp_sop()
@@ -2722,6 +2888,88 @@ def award_xp_page() -> None:
                             }).eq("id", claim["id"]).execute()
                             st.info("Request rejected.")
                             st.rerun()
+    with records_tab:
+        events_fallback = pd.DataFrame([{
+            "id": 1, "NO MATRIK": "S24001", "rule_code": "consultation",
+            "points": 20, "reason": "Academic consultation",
+            "award_mode": "manual", "created_at": "2026-07-29",
+        }])
+        events, events_live = fetch_table("xp_events", events_fallback)
+        if events.empty or "id" not in events.columns:
+            st.info("No XP records are available.")
+        else:
+            def event_points(value: Any) -> int:
+                numeric = pd.to_numeric(value, errors="coerce")
+                return int(numeric) if pd.notna(numeric) else 0
+
+            event_labels = {
+                row["id"]: (
+                    f"{row.get('NO MATRIK', '')} · "
+                    f"{str(row.get('rule_code', '')).replace('_', ' ').title()} · "
+                    f"{event_points(row.get('points')):+d} XP"
+                )
+                for _, row in events.sort_values(
+                    "created_at", ascending=False, na_position="last"
+                ).iterrows()
+            }
+            event_id = st.selectbox(
+                "XP record", list(event_labels),
+                format_func=lambda value: event_labels[value],
+                key="manage_xp_event_id",
+            )
+            event = events[events["id"] == event_id].iloc[0]
+            with st.form("edit_xp_event"):
+                edited_points = st.number_input(
+                    "XP points", min_value=-1000, max_value=1000,
+                    value=event_points(event.get("points")),
+                    step=1,
+                )
+                edited_reason = st.text_area(
+                    "Reason", value=str(event.get("reason", ""))
+                )
+                if st.form_submit_button("Save changes", type="primary"):
+                    if int(edited_points) == 0:
+                        st.error("XP points cannot be zero.")
+                    elif not edited_reason.strip():
+                        st.error("Add a reason for this XP entry.")
+                    elif not events_live:
+                        st.info("Demo mode is read-only.")
+                    else:
+                        try:
+                            db().table("xp_events").update({
+                                "points": int(edited_points),
+                                "reason": edited_reason.strip(),
+                            }).eq("id", event_id).execute()
+                            st.success("XP record and student balance updated.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(
+                                "XP record could not be updated. Run "
+                                "supabase_migration_011_editable_xp_xpteam.sql first. "
+                                f"Details: {exc}"
+                            )
+            confirm_delete = st.checkbox(
+                "I understand this reverses the XP from the student's balance.",
+                key=f"confirm_xp_delete_{event_id}",
+            )
+            if st.button(
+                "Delete XP record", type="primary",
+                disabled=not confirm_delete,
+                key=f"delete_xp_event_{event_id}",
+            ):
+                if not events_live:
+                    st.info("Demo mode is read-only.")
+                else:
+                    try:
+                        db().table("xp_events").delete().eq("id", event_id).execute()
+                        st.success("XP record deleted and its points reversed.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(
+                            "XP record could not be deleted. Run "
+                            "supabase_migration_011_editable_xp_xpteam.sql first. "
+                            f"Details: {exc}"
+                        )
     if not (students_live and rules_live):
         st.caption("Showing the XP workflow with demo data.")
 
@@ -3054,7 +3302,7 @@ def admin_crud_page() -> None:
             "stud_background": [
                 "NO MATRIK", "NAMA PELAJAR", "NICKNAME PELAJAR",
                 "SISTEM", "SPM_MATH", "SPM_ADDMATH", "DM015", "DM025",
-                "PKA", "JANTINA", "KELAS",
+                "PKA", "JANTINA", "KELAS", "XPTEAM",
             ],
             "stud_progress": [
                 "NO MATRIK", "C1C2", "C1C2_ZONE", "C5", "C5_ZONE",
@@ -3062,7 +3310,7 @@ def admin_crud_page() -> None:
                 "INDIVIDUAL ASSIGNMENT", "GROUP ASSIGNMENT",
                 "UPS 1", "UPS 2", "UPS 3",
             ],
-            "stud_xp": ["NO MATRIK", "XP"],
+            "stud_xp": ["NO MATRIK", "XP", "XPTEAM"],
         }
         technical_columns = {"id", "created_at", "updated_at"}
         template_columns = [
