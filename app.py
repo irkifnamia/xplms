@@ -98,7 +98,13 @@ st.markdown(
     [data-testid="stStatusWidget"],
     [data-testid="stDecoration"],
     [data-testid="stDeployButton"],
+    [data-testid="stAppDeployButton"],
+    [data-testid="stManageAppButton"],
+    [data-testid="manage-app-button"],
+    [class*="viewerBadge_container"],
+    [class*="viewerBadge_link"],
     .stDeployButton,
+    .stAppDeployButton,
     #MainMenu {
         display: none !important;
         visibility: hidden !important;
@@ -2075,20 +2081,30 @@ def profile_page() -> None:
                 ("System", row.get("SISTEM", row.get("programme", "—"))),
                 ("PKA", row.get("PKA", "—")),
             ]
-            columns = st.columns(5)
-            for column, (label, value) in zip(columns, values):
-                with column:
-                    metric(label, "—" if pd.isna(value) else str(value).upper())
             hidden = {"id", "created_at", "updated_at"}
-            details = pd.DataFrame([
-                {
-                    "Field": str(field).replace("_", " ").upper(),
-                    "Information": "—" if pd.isna(value) else str(value).upper(),
-                }
+            represented = {
+                "NICKNAME PELAJAR", "NAMA PELAJAR", "name",
+                "NO MATRIK", "student_id", "KELAS", "cohort",
+                "SISTEM", "programme", "PKA",
+            }
+            values.extend(
+                (
+                    str(field).replace("_", " "),
+                    value,
+                )
                 for field, value in row.items()
-                if field not in hidden
-            ])
-            st.dataframe(details, hide_index=True, width="stretch")
+                if field not in hidden and field not in represented
+            )
+            for start in range(0, len(values), 3):
+                columns = st.columns(3)
+                for column, (label, value) in zip(
+                    columns, values[start:start + 3]
+                ):
+                    with column:
+                        metric(
+                            str(label).upper(),
+                            "—" if pd.isna(value) else str(value).upper(),
+                        )
 
     with password_tab:
         with st.form("student_change_password_tabs"):
@@ -2810,6 +2826,7 @@ def student_leaderboard_page() -> None:
         if not individuals.empty and "Class" in individuals.columns
         else pd.DataFrame(columns=["Class"])
     )
+    badge_history = pd.DataFrame()
     if (
         badges_live
         and not earned_badges.empty
@@ -2819,7 +2836,7 @@ def student_leaderboard_page() -> None:
         badge_rows = earned_badges.copy()
         badge_rows["NO MATRIK"] = badge_rows["NO MATRIK"].astype(str)
         student_classes = individuals[[
-            "NO MATRIK", "Class"
+            "NO MATRIK", "Student", "Class"
         ]].drop_duplicates().copy()
         student_classes["NO MATRIK"] = student_classes["NO MATRIK"].astype(str)
         badge_rows = badge_rows.merge(
@@ -2835,6 +2852,7 @@ def student_leaderboard_page() -> None:
         badge_rows["Badge"] = (
             family + " " + badge_rows["badge_name"].astype(str).str.upper()
         )
+        badge_history = badge_rows.copy()
         badge_counts = (
             badge_rows.pivot_table(
                 index="Class",
@@ -2862,11 +2880,12 @@ def student_leaderboard_page() -> None:
         xp_individual_tab,
         streak_tab,
         badge_tab,
+        badge_class_tab,
         test_class_tab,
         xp_class_tab,
         xp_team_tab,
     ) = st.tabs([
-        "TEST", "XP", "STREAK", "BADGE",
+        "TEST", "XP", "STREAK", "BADGE", "BADGE (CLASS)",
         "TEST (CLASS)", "XP (CLASS)", "XP (TEAM)",
     ])
 
@@ -2966,6 +2985,56 @@ def student_leaderboard_page() -> None:
             )
 
     with badge_tab:
+        selected_class = st.selectbox(
+            "Class",
+            ["ALL", *class_options],
+            key="student_leaderboard_badge_class",
+        )
+        if selected_class != "ALL" and not badge_history.empty:
+            badge_history = badge_history[
+                badge_history["Class"].astype(str) == selected_class
+            ]
+        if badge_history.empty:
+            st.info("No student badge achievements are recorded.")
+        else:
+            achieved_column = (
+                "earned_at"
+                if "earned_at" in badge_history.columns
+                else None
+            )
+            display_columns = [
+                "NO MATRIK", "Student", "Class", "Badge",
+            ]
+            if achieved_column:
+                display_columns.append(achieved_column)
+            display = badge_history[display_columns].copy()
+            if achieved_column:
+                display = display.rename(
+                    columns={achieved_column: "Achieved at"}
+                )
+                achieved_at = pd.to_datetime(
+                    display["Achieved at"], errors="coerce", utc=True
+                )
+                display["_achieved_sort"] = achieved_at
+                display["Achieved at"] = (
+                    achieved_at.dt.tz_convert("Asia/Kuala_Lumpur")
+                    .dt.strftime("%Y-%m-%d %H:%M")
+                    .fillna("—")
+                )
+                display = display.sort_values(
+                    "_achieved_sort", ascending=False
+                ).drop(columns=["_achieved_sort"])
+            current_mask = (
+                display["NO MATRIK"].astype(str) == current_matric
+            )
+            display = display.drop(columns=["NO MATRIK"])
+            st.dataframe(
+                highlight_current_rows(display, current_mask),
+                hide_index=True,
+                width="stretch",
+            )
+
+    with badge_class_tab:
         if badge_matrix.empty:
             st.info("Class badge matrix is not available.")
         else:
@@ -5811,6 +5880,33 @@ def simple_page(title: str, copy: str) -> None:
     st.info("This workspace is ready for your institution-specific configuration.")
 
 
+def configure_manage_app_visibility(actual_role: str) -> None:
+    """Expose Streamlit's owner control only inside an Admin session."""
+    if actual_role != "Admin":
+        return
+    st.markdown(
+        """
+        <style>
+        [data-testid="stStatusWidget"],
+        [data-testid="stDeployButton"],
+        [data-testid="stAppDeployButton"],
+        [data-testid="stManageAppButton"],
+        [data-testid="manage-app-button"],
+        [class*="viewerBadge_container"],
+        [class*="viewerBadge_link"],
+        .stDeployButton,
+        .stAppDeployButton {
+            display: flex !important;
+            visibility: visible !important;
+            height: auto !important;
+            pointer-events: auto !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     demo_role = os.getenv("XPLMS_DEMO_ROLE", "").title()
     if "user" not in st.session_state and demo_role in {"Student", "Admin"}:
@@ -5824,6 +5920,7 @@ def main() -> None:
         login()
         return
     user = st.session_state.user
+    configure_manage_app_visibility(user.get("role", "Student"))
     if user.get("must_change_password"):
         st.session_state.header_identity = (
             f"{user.get('name', 'USER')} | {user.get('role', 'USER')}"
