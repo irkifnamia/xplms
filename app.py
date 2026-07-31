@@ -3308,6 +3308,97 @@ def admin_quiz_page() -> None:
                 )
                 for _, row in review_frame.iterrows()
             }
+            discard_question_ids = st.multiselect(
+                "Questions to discard and replace",
+                list(question_labels),
+                format_func=lambda value: question_labels[value],
+                help=(
+                    "Only selected questions are deleted. Their difficulty "
+                    "slots are regenerated from the bank's original materials."
+                ),
+            )
+            discard_questions_confirmed = st.checkbox(
+                "I understand the selected questions will be permanently deleted.",
+                value=False,
+                key=f"discard_questions_confirm_{review_quiz_id}",
+            )
+            if st.button(
+                (
+                    f"Discard and regenerate {len(discard_question_ids)} "
+                    "selected question(s)"
+                ),
+                type="primary",
+                disabled=(
+                    not discard_question_ids
+                    or not discard_questions_confirmed
+                ),
+                key=f"discard_questions_{review_quiz_id}",
+            ):
+                draft_row = drafts[
+                    drafts["id"].astype(int) == int(review_quiz_id)
+                ].iloc[0]
+                source_ids = {
+                    int(value)
+                    for value in (
+                        draft_row.get("source_material_ids") or []
+                    )
+                }
+                if not source_ids and pd.notna(
+                    draft_row.get("material_id")
+                ):
+                    source_ids.add(int(draft_row["material_id"]))
+                source_materials = materials[
+                    materials["id"].astype(int).isin(source_ids)
+                ]
+                if source_materials.empty:
+                    st.error(
+                        "The original source materials are unavailable, so "
+                        "replacement questions cannot be generated."
+                    )
+                else:
+                    try:
+                        selected_for_discard = review_frame[
+                            review_frame["id"].astype(int).isin(
+                                discard_question_ids
+                            )
+                        ]
+                        discarded_mix = (
+                            selected_for_discard["difficulty"]
+                            .value_counts()
+                            .to_dict()
+                        )
+                        db().table("quiz_questions").delete().in_(
+                            "id", discard_question_ids
+                        ).execute()
+                        db().table("quizzes").update({
+                            "reviewed_at": None,
+                            "reviewed_by": None,
+                        }).eq("id", review_quiz_id).execute()
+                        mix_text = ", ".join(
+                            f"{count} {difficulty}"
+                            for difficulty, count in discarded_mix.items()
+                        )
+                        with st.spinner(
+                            f"Regenerating replacements for {mix_text}…"
+                        ):
+                            ok, message = generate_chapter_quiz_bank(
+                                source_materials,
+                                int(draft_row["chapter"]),
+                            )
+                        if ok:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.warning(
+                                f"{message} The discarded slots remain missing; "
+                                "use Generate or resume to continue later."
+                            )
+                    except Exception as exc:
+                        st.error(
+                            "Selected questions could not be discarded and "
+                            f"regenerated: {exc}"
+                        )
+
             edit_question_id = st.selectbox(
                 "Question to inspect or edit",
                 list(question_labels),
