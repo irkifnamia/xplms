@@ -3201,13 +3201,15 @@ def admin_quiz_page() -> None:
                     else "Generate or resume 200-question bank"
                 ),
                 type="primary",
-                disabled=(
-                    not bool(openai_api_key())
-                    or (discard_existing and not discard_confirmed)
-                ),
+                disabled=not bool(openai_api_key()),
             )
             if generate:
-                if not material_ids:
+                if discard_existing and not discard_confirmed:
+                    st.error(
+                        "Confirm that you understand the existing draft "
+                        "questions will be permanently deleted."
+                    )
+                elif not material_ids:
                     st.error("Select at least one source material.")
                 else:
                     selected = chapter_materials[
