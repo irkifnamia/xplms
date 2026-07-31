@@ -2073,9 +2073,14 @@ def profile_page() -> None:
                 "NICKNAME PELAJAR",
                 row.get("NAMA PELAJAR", row.get("name", user.get("name", "—"))),
             )
+            full_name = row.get(
+                "NAMA PELAJAR",
+                row.get("name", user.get("name", "—")),
+            )
             matric = row.get("NO MATRIK", user.get("no_matrik", "—"))
             values = [
-                ("Student name", name),
+                ("NAMA PELAJAR", full_name),
+                ("NICKNAME PELAJAR", name),
                 ("No Matrik", matric),
                 ("Class", row.get("KELAS", row.get("cohort", "—"))),
                 ("System", row.get("SISTEM", row.get("programme", "—"))),
@@ -5880,12 +5885,15 @@ def simple_page(title: str, copy: str) -> None:
     st.info("This workspace is ready for your institution-specific configuration.")
 
 
-def configure_manage_app_visibility(actual_role: str) -> None:
+def configure_manage_app_visibility(active_role: str) -> None:
     """Expose Streamlit's owner control only inside an Admin session."""
-    if actual_role != "Admin":
-        return
+    visible = active_role == "Admin"
+    display = "flex" if visible else "none"
+    visibility = "visible" if visible else "hidden"
+    height = "auto" if visible else "0"
+    pointer_events = "auto" if visible else "none"
     st.markdown(
-        """
+        f"""
         <style>
         [data-testid="stStatusWidget"],
         [data-testid="stDeployButton"],
@@ -5895,12 +5903,12 @@ def configure_manage_app_visibility(actual_role: str) -> None:
         [class*="viewerBadge_container"],
         [class*="viewerBadge_link"],
         .stDeployButton,
-        .stAppDeployButton {
-            display: flex !important;
-            visibility: visible !important;
-            height: auto !important;
-            pointer-events: auto !important;
-        }
+        .stAppDeployButton {{
+            display: {display} !important;
+            visibility: {visibility} !important;
+            height: {height} !important;
+            pointer-events: {pointer_events} !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -5920,7 +5928,6 @@ def main() -> None:
         login()
         return
     user = st.session_state.user
-    configure_manage_app_visibility(user.get("role", "Student"))
     if user.get("must_change_password"):
         st.session_state.header_identity = (
             f"{user.get('name', 'USER')} | {user.get('role', 'USER')}"
@@ -5935,6 +5942,7 @@ def main() -> None:
     )
     if role not in {"Student", "Admin"}:
         role = "Student"
+    configure_manage_app_visibility(role)
     if role == "Student":
         if actual_role == "Admin" and not is_demo():
             preview_student = ensure_preview_student()
