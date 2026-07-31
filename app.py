@@ -8,6 +8,7 @@ import io
 import hashlib
 import json
 import os
+import random
 import re
 from datetime import datetime
 from pathlib import Path
@@ -808,6 +809,79 @@ def is_demo() -> bool:
     return user.get("id") == "demo"
 
 
+def is_admin_student_preview() -> bool:
+    """True when an administrator is viewing the app as a real student."""
+    user = st.session_state.get("user", {})
+    return (
+        user.get("role") == "Admin"
+        and st.session_state.get("admin_preview_role") == "Student"
+    )
+
+
+def current_user() -> dict[str, Any]:
+    """Return the effective student during preview without replacing the admin."""
+    if is_admin_student_preview():
+        preview_user = st.session_state.get("preview_student_user")
+        if preview_user:
+            return preview_user
+    return st.session_state.get("user", {})
+
+
+def is_read_only_session() -> bool:
+    return is_demo() or is_admin_student_preview()
+
+
+def clear_student_preview_state() -> None:
+    """Discard temporary preview identity, answers and form widget state."""
+    removable_prefixes = (
+        "daily_answer_",
+        "daily_quiz_",
+        "student_xp_request",
+        "preview_",
+    )
+    for key in list(st.session_state):
+        if str(key).startswith(removable_prefixes):
+            del st.session_state[key]
+
+
+def ensure_preview_student() -> dict[str, Any] | None:
+    existing = st.session_state.get("preview_student_user")
+    if existing:
+        return existing
+    client = db()
+    if not client:
+        return None
+    try:
+        rows = (
+            client.table("app_users")
+            .select('id,full_name,username,email,role,active,"NO MATRIK"')
+            .eq("role", "student")
+            .eq("active", True)
+            .execute()
+            .data
+        )
+        candidates = [
+            row for row in rows
+            if str(row.get("NO MATRIK") or "").strip()
+        ]
+        if not candidates:
+            return None
+        selected = random.choice(candidates)
+        preview_user = {
+            "id": selected["id"],
+            "name": selected.get("full_name") or selected.get("username") or "Student",
+            "username": selected.get("username"),
+            "email": selected.get("email"),
+            "role": "Student",
+            "no_matrik": selected.get("NO MATRIK"),
+            "preview_only": True,
+        }
+        st.session_state.preview_student_user = preview_user
+        return preview_user
+    except Exception:
+        return None
+
+
 def fetch_table(name: str, fallback: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     if is_demo():
         return fallback.copy(), False
@@ -841,8 +915,8 @@ def fetch_student_row(
 
 
 def upsert_rows(name: str, frame: pd.DataFrame) -> tuple[bool, str]:
-    if is_demo():
-        return False, "Demo mode is read-only. No Supabase data was changed."
+    if is_read_only_session():
+        return False, "Preview mode is read-only. No Supabase data was changed."
     client = db()
     if not client:
         return False, "Supabase is unavailable. No data was changed."
@@ -855,8 +929,8 @@ def upsert_rows(name: str, frame: pd.DataFrame) -> tuple[bool, str]:
 
 
 def upload_file(bucket: str, path: str, data: bytes, content_type: str) -> tuple[bool, str]:
-    if is_demo():
-        return False, "Demo mode is read-only. No file was uploaded."
+    if is_read_only_session():
+        return False, "Preview mode is read-only. No file was uploaded."
     client = db()
     if not client:
         return False, "Supabase storage is unavailable."
@@ -1202,7 +1276,10 @@ def sync_navigation(source_key: str, active_key: str) -> None:
 
 
 def sync_admin_preview(source_key: str) -> None:
-    st.session_state.admin_preview_role = st.session_state[source_key]
+    selected_role = st.session_state[source_key]
+    st.session_state.admin_preview_role = selected_role
+    if selected_role == "Admin":
+        clear_student_preview_state()
 
 
 def sidebar(role: str, name: str) -> str:
@@ -1237,6 +1314,8 @@ def sidebar(role: str, name: str) -> str:
             )
             if selected_preview != role:
                 st.session_state.admin_preview_role = selected_preview
+                if selected_preview == "Admin":
+                    clear_student_preview_state()
                 st.rerun()
         menus = {
             "Student": [
@@ -1769,7 +1848,7 @@ def leaderboard_data(
 
 def progress_page() -> None:
     heading("", "Results")
-    user = st.session_state.get("user", {})
+    user = current_user()
     progress, _ = fetch_student_row(
         "stud_progress", user.get("no_matrik"), DEMO_PROGRESS
     )
@@ -1892,7 +1971,7 @@ def _legacy_profile_page() -> None:
 
 def profile_page() -> None:
     heading("", "Profile")
-    user = st.session_state.get("user", {})
+    user = current_user()
     background, _ = fetch_student_row(
         "stud_background", user.get("no_matrik"), DEMO_STUDENTS
     )
@@ -1936,8 +2015,10 @@ def profile_page() -> None:
             new_password = st.text_input("New password", type="password")
             confirm_password = st.text_input("Confirm new password", type="password")
             if st.form_submit_button("Change password", type="primary"):
-                if is_demo():
-                    st.success("Password change is disabled in demo mode.")
+                if is_read_only_session():
+                    st.info(
+                        "Preview mode: the password change was discarded."
+                    )
                 elif new_password != confirm_password:
                     st.error("The new passwords do not match.")
                 elif not valid_password(new_password):
@@ -2220,7 +2301,7 @@ def _legacy_student_leaderboard_page() -> None:
 
 def request_xp_page() -> None:
     heading("", "Request XP")
-    user = st.session_state.get("user", {})
+    user = current_user()
     claims, live = fetch_table("xp_claims", pd.DataFrame())
     if live and "NO MATRIK" in claims.columns:
         claims = claims[
@@ -2257,8 +2338,11 @@ def request_xp_page() -> None:
                         f"Daily quota reached: maximum {quota} "
                         f"{claim_type.replace('_', ' ')} requests per day."
                     )
-                elif is_demo():
-                    st.success("Demo request submitted.")
+                elif is_read_only_session():
+                    st.success(
+                        "Preview request completed locally and discarded. "
+                        "No student or Supabase record was changed."
+                    )
                 else:
                     client = db()
                     path = None
@@ -2435,7 +2519,7 @@ def render_badge_cards(
 
 def my_xp_page() -> None:
     heading("", "XP Journey")
-    user = st.session_state.get("user", {})
+    user = current_user()
     individuals, _, months, default_month = leaderboard_data()
     selected_month = st.selectbox(
         "XP month", months, index=months.index(default_month),
@@ -3629,7 +3713,7 @@ def quiz_page() -> None:
         "Chapter quiz",
         "Answer 10 random questions per chapter each day and earn automatic XP.",
     )
-    user = st.session_state.user
+    user = current_user()
     today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
     quizzes, quizzes_live = fetch_table("quizzes", pd.DataFrame())
     live = quizzes_live
@@ -3675,24 +3759,27 @@ def quiz_page() -> None:
 
     if live:
         client = db()
-        try:
-            attempt_history = (
-                client.table("quiz_attempts")
-                .select(
-                    "score,correct_count,total_questions,xp_awarded,"
-                    "completed_at,attempt_date,answers"
+        if is_admin_student_preview():
+            attempt_history = []
+        else:
+            try:
+                attempt_history = (
+                    client.table("quiz_attempts")
+                    .select(
+                        "score,correct_count,total_questions,xp_awarded,"
+                        "completed_at,attempt_date,answers"
+                    )
+                    .eq("student_user_id", user["id"])
+                    .eq("chapter", int(chapter))
+                    .execute()
+                    .data
                 )
-                .eq("student_user_id", user["id"])
-                .eq("chapter", int(chapter))
-                .execute()
-                .data
-            )
-        except Exception:
-            st.error(
-                "Run supabase_migration_014_material_quiz_banks.sql "
-                "before using daily quizzes."
-            )
-            return
+            except Exception:
+                st.error(
+                    "Run supabase_migration_014_material_quiz_banks.sql "
+                    "before using daily quizzes."
+                )
+                return
         previous = [
             attempt for attempt in attempt_history
             if str(attempt.get("attempt_date")) == today
@@ -3825,7 +3912,13 @@ def quiz_page() -> None:
                 total_questions = len(daily_questions)
                 score = correct / total_questions * 100
                 xp_awarded = total_questions + correct
-                if not live:
+                if is_admin_student_preview():
+                    st.success(
+                        f"Student preview result: {correct}/10 correct · "
+                        f"{xp_awarded} XP simulated. Answers, attempt history "
+                        "and XP were discarded; Supabase was not changed."
+                    )
+                elif not live:
                     st.success(
                         f"Demo result: {correct}/10 correct · {xp_awarded} XP."
                     )
@@ -5250,7 +5343,20 @@ def main() -> None:
     if role not in {"Student", "Admin"}:
         role = "Student"
     if role == "Student":
-        display_name, student_class = student_identity(user)
+        if actual_role == "Admin" and not is_demo():
+            preview_student = ensure_preview_student()
+            if preview_student is None:
+                st.session_state.admin_preview_role = "Admin"
+                clear_student_preview_state()
+                st.error(
+                    "Student preview requires at least one active student "
+                    "account with a NO MATRIK."
+                )
+                return
+            effective_user = preview_student
+        else:
+            effective_user = user
+        display_name, student_class = student_identity(effective_user)
         st.session_state.header_identity = (
             f"{display_name} | {student_class}"
         ).upper()
@@ -5260,6 +5366,14 @@ def main() -> None:
     page = sidebar(role, display_name)
     page = mobile_navigation(role, page)
     if role == "Student":
+        if is_admin_student_preview():
+            preview_user = current_user()
+            st.info(
+                "ADMIN STUDENT PREVIEW · "
+                f"{preview_user.get('name', 'Student')} · "
+                f"{preview_user.get('no_matrik', '—')} · "
+                "Read-only: all submissions and changes are discarded."
+            )
         {
             "Results": progress_page,
             "Materials": materials_page,
