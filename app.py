@@ -353,6 +353,15 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   margin:auto;
   filter:drop-shadow(0 3px 4px rgba(18,42,76,.13));
 }
+.login-copyright {
+  margin:12px 0 0;
+  color:#6b7788;
+  font-size:.76rem;
+  font-weight:500;
+  line-height:1.4;
+  letter-spacing:.01em;
+  text-align:center;
+}
 .katex-display {
   overflow-x:auto;
   overflow-y:hidden;
@@ -1586,6 +1595,12 @@ def login() -> None:
                     st.rerun()
                 except Exception:
                     st.error("We couldn't sign you in. Check your username and password.")
+            st.markdown(
+                '<div class="login-copyright">'
+                '&copy; 2026 AFJ Analytics. All Rights Reserved.'
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def merged_students() -> tuple[pd.DataFrame, bool]:
