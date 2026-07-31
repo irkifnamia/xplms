@@ -3237,6 +3237,9 @@ def admin_quiz_page() -> None:
         )
         return
     st.subheader("Question bank review")
+    review_flash = st.session_state.pop("quiz_review_flash", None)
+    if review_flash:
+        st.success(review_flash)
     drafts = (
         quizzes[quizzes["status"] == "draft"].copy()
         if not quizzes.empty and "status" in quizzes.columns
@@ -3276,6 +3279,21 @@ def admin_quiz_page() -> None:
                 "resume to continue building it."
             )
         else:
+            approved_count = int(
+                (
+                    review_frame.get(
+                        "review_status",
+                        pd.Series(index=review_frame.index, dtype=str),
+                    ) == "approved"
+                ).sum()
+            )
+            st.progress(
+                approved_count / max(len(review_frame), 1),
+                text=(
+                    f"{approved_count}/{len(review_frame)} questions "
+                    "individually approved"
+                ),
+            )
             difficulty_filter = st.segmented_control(
                 "Review difficulty",
                 ["all", "easy", "medium", "hard"],
@@ -3443,7 +3461,10 @@ def admin_quiz_page() -> None:
                     "Explanation",
                     value=str(selected_question["explanation"]),
                 )
-                if st.form_submit_button("Save reviewed question"):
+                if st.form_submit_button(
+                    "Save and approve this question",
+                    type="primary",
+                ):
                     if (
                         not edited_question.strip()
                         or not edited_explanation.strip()
@@ -3461,15 +3482,43 @@ def admin_quiz_page() -> None:
                                 ],
                                 "correct_index": int(edited_correct),
                                 "explanation": edited_explanation.strip(),
-                                "review_status": "pending",
-                                "reviewed_at": None,
-                                "reviewed_by": None,
+                                "review_status": "approved",
+                                "reviewed_at": datetime.now().isoformat(),
+                                "reviewed_by": st.session_state.user["id"],
                             }).eq("id", edit_question_id).execute()
-                            db().table("quizzes").update({
-                                "reviewed_at": None,
-                                "reviewed_by": None,
-                            }).eq("id", review_quiz_id).execute()
-                            st.success("Question saved. Re-approve the bank when review is complete.")
+                            approved_response = (
+                                db().table("quiz_questions")
+                                .select("id", count="exact")
+                                .eq("quiz_id", review_quiz_id)
+                                .eq("review_status", "approved")
+                                .execute()
+                            )
+                            approved_total = int(
+                                approved_response.count
+                                if approved_response.count is not None
+                                else len(approved_response.data or [])
+                            )
+                            if approved_total == 200:
+                                completed_at = datetime.now().isoformat()
+                                db().table("quizzes").update({
+                                    "reviewed_at": completed_at,
+                                    "reviewed_by": st.session_state.user["id"],
+                                }).eq("id", review_quiz_id).execute()
+                                message = (
+                                    "Question saved and approved. All 200 "
+                                    "questions are now approved; the bank is "
+                                    "ready to publish."
+                                )
+                            else:
+                                db().table("quizzes").update({
+                                    "reviewed_at": None,
+                                    "reviewed_by": None,
+                                }).eq("id", review_quiz_id).execute()
+                                message = (
+                                    "Question saved and approved successfully "
+                                    f"({approved_total}/200 approved)."
+                                )
+                            st.session_state.quiz_review_flash = message
                             st.rerun()
                         except Exception as exc:
                             st.error(f"Question could not be saved: {exc}")
