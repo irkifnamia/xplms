@@ -2609,6 +2609,23 @@ def highlight_current_rows(
     )
 
 
+def highlight_current_class_column(
+    frame: pd.DataFrame, current_class: str
+) -> pd.io.formats.style.Styler:
+    """Highlight the signed-in student's class in a transposed matrix."""
+    return frame.style.apply(
+        lambda column: (
+            [
+                "background-color: #d9f1ea; color: #102543; font-weight: 700"
+            ]
+            * len(column)
+            if str(column.name) == current_class
+            else [""] * len(column)
+        ),
+        axis=0,
+    )
+
+
 def my_xp_page() -> None:
     heading("", "XP Journey")
     user = current_user()
@@ -2917,11 +2934,14 @@ def student_leaderboard_page() -> None:
         if badge_matrix.empty:
             st.info("Class badge matrix is not available.")
         else:
+            display = (
+                badge_matrix.set_index("Class")
+                .transpose()
+                .rename_axis("Badge")
+                .reset_index()
+            )
             st.dataframe(
-                highlight_current_rows(
-                    badge_matrix,
-                    badge_matrix["Class"].astype(str) == current_class,
-                ),
+                highlight_current_class_column(display, current_class),
                 hide_index=True, width="stretch",
             )
 
