@@ -3975,6 +3975,36 @@ def quiz_page() -> None:
                     saved_answers = {}
             if isinstance(saved_answers, dict):
                 seen_question_ids.update(str(key) for key in saved_answers)
+        assigned_question_ids: list[int] = []
+        if not is_admin_student_preview():
+            try:
+                saved_sets = (
+                    client.table("daily_quiz_sets")
+                    .select("question_ids,set_date")
+                    .eq("student_user_id", user["id"])
+                    .eq("chapter", int(chapter))
+                    .execute()
+                    .data
+                )
+                for saved_set in saved_sets or []:
+                    saved_ids = [
+                        int(question_id)
+                        for question_id in (
+                            saved_set.get("question_ids") or []
+                        )
+                    ]
+                    if str(saved_set.get("set_date")) == today:
+                        assigned_question_ids = saved_ids
+                    else:
+                        seen_question_ids.update(
+                            str(question_id) for question_id in saved_ids
+                        )
+            except Exception:
+                st.error(
+                    "Run supabase_migration_018_unique_daily_quiz_sets.sql "
+                    "before opening daily quizzes."
+                )
+                return
         chapter_quizzes = quiz_materials[
             quiz_materials["chapter"].astype(int) == int(chapter)
         ]
@@ -4020,33 +4050,137 @@ def quiz_page() -> None:
     question_frame["difficulty"] = (
         question_frame["difficulty"].astype(str).str.lower()
     )
-    question_frame = question_frame[
-        ~question_frame["id"].astype(str).isin(seen_question_ids)
-    ]
-    daily_questions: list[dict[str, Any]] = []
-    for offset, (difficulty, required) in enumerate(
-        DAILY_QUIZ_DISTRIBUTION.items()
-    ):
-        available = question_frame[
-            question_frame["difficulty"] == difficulty
+    if live and assigned_question_ids:
+        assigned = question_frame[
+            question_frame["id"].astype(int).isin(assigned_question_ids)
         ]
-        if len(available) < required:
-            st.info(
-                f"C{chapter} has no new daily set available. "
-                f"Only {len(available)} unseen {difficulty} questions remain; "
-                f"{required} are required. Ask an admin to generate a new bank."
+        if len(assigned) != 10:
+            st.error(
+                "Today's saved quiz set is incomplete. Ask an administrator "
+                "to check the published question bank."
             )
             return
-        daily_questions.extend(
-            available.sample(
-                n=required, random_state=seed + offset
-            ).to_dict("records")
-        )
-    daily_questions = (
-        pd.DataFrame(daily_questions)
-        .sample(frac=1, random_state=seed + 10)
-        .to_dict("records")
-    )
+        order = {
+            question_id: position
+            for position, question_id in enumerate(assigned_question_ids)
+        }
+        assigned = assigned.assign(
+            _daily_order=assigned["id"].astype(int).map(order)
+        ).sort_values("_daily_order")
+        daily_questions = assigned.drop(
+            columns=["_daily_order"]
+        ).to_dict("records")
+    else:
+        unseen_questions = question_frame[
+            ~question_frame["id"].astype(str).isin(seen_question_ids)
+        ]
+        daily_questions: list[dict[str, Any]] = []
+        allocation_error = ""
+        for allocation_attempt in range(50):
+            candidate: list[dict[str, Any]] = []
+            for offset, (difficulty, required) in enumerate(
+                DAILY_QUIZ_DISTRIBUTION.items()
+            ):
+                available = unseen_questions[
+                    unseen_questions["difficulty"] == difficulty
+                ]
+                if len(available) < required:
+                    st.info(
+                        f"C{chapter} has no new daily set available. "
+                        f"Only {len(available)} unseen {difficulty} questions "
+                        f"remain; {required} are required. Ask an admin to "
+                        "generate a new bank."
+                    )
+                    return
+                candidate.extend(
+                    available.sample(
+                        n=required,
+                        random_state=(
+                            seed + offset + allocation_attempt * 101
+                        ) % (2**32 - 1),
+                    ).to_dict("records")
+                )
+            candidate = (
+                pd.DataFrame(candidate)
+                .sample(
+                    frac=1,
+                    random_state=(seed + 10 + allocation_attempt) % (2**32 - 1),
+                )
+                .to_dict("records")
+            )
+            if live and not is_admin_student_preview():
+                question_ids = [
+                    int(question["id"]) for question in candidate
+                ]
+                fingerprint = hashlib.sha256(
+                    ",".join(
+                        str(question_id)
+                        for question_id in sorted(question_ids)
+                    ).encode("utf-8")
+                ).hexdigest()
+                try:
+                    client.table("daily_quiz_sets").insert({
+                        "student_user_id": user["id"],
+                        "NO MATRIK": user["no_matrik"],
+                        "chapter": int(chapter),
+                        "set_date": today,
+                        "question_ids": question_ids,
+                        "set_fingerprint": fingerprint,
+                    }).execute()
+                except Exception as exc:
+                    allocation_error = str(exc)
+                    if "23505" in allocation_error:
+                        existing_set = (
+                            client.table("daily_quiz_sets")
+                            .select("question_ids")
+                            .eq("student_user_id", user["id"])
+                            .eq("chapter", int(chapter))
+                            .eq("set_date", today)
+                            .limit(1)
+                            .execute()
+                            .data
+                        )
+                        if existing_set:
+                            existing_ids = [
+                                int(question_id)
+                                for question_id in (
+                                    existing_set[0].get("question_ids") or []
+                                )
+                            ]
+                            existing_order = {
+                                question_id: position
+                                for position, question_id in enumerate(
+                                    existing_ids
+                                )
+                            }
+                            existing_questions = question_frame[
+                                question_frame["id"].astype(int).isin(
+                                    existing_ids
+                                )
+                            ].assign(
+                                _daily_order=lambda frame: (
+                                    frame["id"].astype(int).map(existing_order)
+                                )
+                            ).sort_values("_daily_order")
+                            if len(existing_questions) == 10:
+                                candidate = existing_questions.drop(
+                                    columns=["_daily_order"]
+                                ).to_dict("records")
+                                daily_questions = candidate
+                                break
+                        continue
+                    st.error(
+                        f"Today's unique quiz set could not be allocated: {exc}"
+                    )
+                    return
+            daily_questions = candidate
+            break
+        if not daily_questions:
+            st.error(
+                "A unique daily quiz set could not be allocated after several "
+                "attempts. Please try again."
+            )
+            return
     st.caption(
         "Full complete attempt : 5XP , Each correct : 1XP"
     )
