@@ -2780,6 +2780,13 @@ def student_leaderboard_page() -> None:
     current_team = (
         str(own_identity.iloc[0]["XPTEAM"]) if not own_identity.empty else ""
     )
+    class_options = (
+        sorted(
+            individuals["Class"].dropna().astype(str).unique().tolist()
+        )
+        if not individuals.empty and "Class" in individuals.columns
+        else []
+    )
 
     earned_badges, badges_live = fetch_table(
         "student_badges", pd.DataFrame()
@@ -2864,6 +2871,11 @@ def student_leaderboard_page() -> None:
     ])
 
     with test_individual_tab:
+        selected_class = st.selectbox(
+            "Class",
+            ["ALL", *class_options],
+            key="student_leaderboard_test_individual_class",
+        )
         assessment = st.selectbox(
             "Test",
             assessments,
@@ -2873,6 +2885,10 @@ def student_leaderboard_page() -> None:
             progress_standings(assessment)
             if assessment else (pd.DataFrame(), pd.DataFrame())
         )
+        if selected_class != "ALL" and not individual_progress.empty:
+            individual_progress = individual_progress[
+                individual_progress["Class"].astype(str) == selected_class
+            ]
         if individual_progress.empty:
             st.info("Individual test leaderboard is not available.")
         else:
@@ -2887,6 +2903,11 @@ def student_leaderboard_page() -> None:
             )
 
     with xp_individual_tab:
+        selected_class = st.selectbox(
+            "Class",
+            ["ALL", *class_options],
+            key="student_leaderboard_xp_individual_class",
+        )
         selected_month = st.selectbox(
             "XP month",
             months,
@@ -2894,6 +2915,10 @@ def student_leaderboard_page() -> None:
             key="student_leaderboard_xp_individual_month",
         )
         xp_individuals, _, _, _ = leaderboard_data(selected_month)
+        if selected_class != "ALL" and not xp_individuals.empty:
+            xp_individuals = xp_individuals[
+                xp_individuals["Class"].astype(str) == selected_class
+            ]
         if xp_individuals.empty:
             st.info("Individual XP leaderboard is not available.")
         else:
@@ -2909,10 +2934,20 @@ def student_leaderboard_page() -> None:
             )
 
     with streak_tab:
-        if individuals.empty:
+        selected_class = st.selectbox(
+            "Class",
+            ["ALL", *class_options],
+            key="student_leaderboard_streak_class",
+        )
+        streak_individuals = individuals
+        if selected_class != "ALL" and not streak_individuals.empty:
+            streak_individuals = streak_individuals[
+                streak_individuals["Class"].astype(str) == selected_class
+            ]
+        if streak_individuals.empty:
             st.info("Individual streak leaderboard is not available.")
         else:
-            display = individuals[[
+            display = streak_individuals[[
                 "NO MATRIK", "Student", "Class",
                 "Current Streak", "Streak Badge",
             ]].copy()
@@ -2992,6 +3027,11 @@ def student_leaderboard_page() -> None:
             )
 
     with xp_team_tab:
+        selected_class = st.selectbox(
+            "Class",
+            ["ALL", *class_options],
+            key="student_leaderboard_xp_team_class",
+        )
         selected_month = st.selectbox(
             "XP month",
             months,
@@ -2999,6 +3039,10 @@ def student_leaderboard_page() -> None:
             key="student_leaderboard_xp_team_month",
         )
         xp_individuals, _, _, _ = leaderboard_data(selected_month)
+        if selected_class != "ALL" and not xp_individuals.empty:
+            xp_individuals = xp_individuals[
+                xp_individuals["Class"].astype(str) == selected_class
+            ]
         teams = (
             xp_individuals.groupby("XPTEAM", dropna=False)
             .agg(
