@@ -1673,10 +1673,10 @@ ASSESSMENT_COLUMNS = [
 ]
 
 BADGE_LEVELS = [
-    (100, "Rookie"),
-    (300, "Explorer"),
-    (600, "Expert"),
-    (1000, "Legend"),
+    (200, "Rookie"),
+    (500, "Explorer"),
+    (1000, "Expert"),
+    (1500, "Legend"),
 ]
 STREAK_BADGE_LEVELS = [
     (7, "Rookie"),
@@ -2324,7 +2324,7 @@ def _legacy_student_leaderboard_page() -> None:
                         unsafe_allow_html=True,
                     )
         else:
-            st.info("No badges captured yet. The first badge unlocks at 100 overall XP.")
+            st.info("No badges captured yet. The first badge unlocks at 200 overall XP.")
 
     xp_tab, progress_tab = st.tabs(["XP leaderboard", "Progress leaderboard"])
     with xp_tab:
@@ -2591,6 +2591,24 @@ def render_badge_cards(
     )
 
 
+def highlight_current_rows(
+    frame: pd.DataFrame, current_mask: pd.Series
+) -> pd.io.formats.style.Styler:
+    """Highlight the signed-in student's associated leaderboard rows."""
+    mask = current_mask.reindex(frame.index, fill_value=False)
+    return frame.style.apply(
+        lambda row: (
+            [
+                "background-color: #d9f1ea; color: #102543; font-weight: 700"
+            ]
+            * len(row)
+            if bool(mask.loc[row.name])
+            else [""] * len(row)
+        ),
+        axis=1,
+    )
+
+
 def my_xp_page() -> None:
     heading("", "XP Journey")
     user = current_user()
@@ -2724,6 +2742,8 @@ def my_xp_page() -> None:
 
 def student_leaderboard_page() -> None:
     heading("", "Leaderboard")
+    user = current_user()
+    current_matric = str(user.get("no_matrik") or "")
     individuals, classes, months, default_month = leaderboard_data()
     selected_month = st.selectbox(
         "XP month", months, index=months.index(default_month),
@@ -2755,6 +2775,15 @@ def student_leaderboard_page() -> None:
     individual_progress, class_progress = (
         progress_standings(assessment)
         if assessment else (pd.DataFrame(), pd.DataFrame())
+    )
+    own_identity = individuals[
+        individuals["NO MATRIK"].astype(str) == current_matric
+    ] if not individuals.empty else pd.DataFrame()
+    current_class = (
+        str(own_identity.iloc[0]["Class"]) if not own_identity.empty else ""
+    )
+    current_team = (
+        str(own_identity.iloc[0]["XPTEAM"]) if not own_identity.empty else ""
     )
     if selected_class != "ALL":
         individuals = individuals[
@@ -2799,53 +2828,70 @@ def student_leaderboard_page() -> None:
         if individuals.empty:
             st.info("Individual XP leaderboard is not available.")
         else:
+            display = individuals[[
+                "NO MATRIK", "Monthly Rank", "Overall Rank", "Student", "Class",
+                "Monthly XP", "Overall XP", "Current Streak", "Streak Badge",
+            ]].sort_values(["Monthly Rank", "Overall Rank", "Student"])
+            current_mask = display["NO MATRIK"].astype(str) == current_matric
+            display = display.drop(columns=["NO MATRIK"])
             st.dataframe(
-                individuals[[
-                    "Monthly Rank", "Overall Rank", "Student", "Class",
-                    "Monthly XP", "Overall XP", "Current Streak", "Streak Badge",
-                ]].sort_values(["Monthly Rank", "Overall Rank", "Student"]),
+                highlight_current_rows(display, current_mask),
                 hide_index=True, width="stretch",
             )
     with xp_class:
         if classes.empty:
             st.info("Class XP leaderboard is not available.")
         else:
+            display = classes[[
+                "Monthly Rank", "Overall Rank", "Class", "Students",
+                "Monthly XP Average", "Monthly XP Total",
+                "Overall XP Average", "Overall XP Total",
+            ]].sort_values(["Monthly Rank", "Overall Rank", "Class"])
             st.dataframe(
-                classes[[
-                    "Monthly Rank", "Overall Rank", "Class", "Students",
-                    "Monthly XP Average", "Monthly XP Total",
-                    "Overall XP Average", "Overall XP Total",
-                ]].sort_values(["Monthly Rank", "Overall Rank", "Class"]),
+                highlight_current_rows(
+                    display, display["Class"].astype(str) == current_class
+                ),
                 hide_index=True, width="stretch",
             )
     with xp_team:
         if teams.empty:
             st.info("XPTEAM leaderboard is not available.")
         else:
+            display = teams[[
+                "Monthly Rank", "Overall Rank", "XPTEAM", "Students",
+                "Monthly XP Average", "Monthly XP Total",
+                "Overall XP Average", "Overall XP Total",
+            ]].sort_values(["Monthly Rank", "Overall Rank", "XPTEAM"])
             st.dataframe(
-                teams[[
-                    "Monthly Rank", "Overall Rank", "XPTEAM", "Students",
-                    "Monthly XP Average", "Monthly XP Total",
-                    "Overall XP Average", "Overall XP Total",
-                ]].sort_values(["Monthly Rank", "Overall Rank", "XPTEAM"]),
+                highlight_current_rows(
+                    display, display["XPTEAM"].astype(str) == current_team
+                ),
                 hide_index=True, width="stretch",
             )
     with progress_individual:
         if individual_progress.empty:
             st.info("Individual progress leaderboard is not available.")
         else:
+            display = individual_progress[[
+                "NO MATRIK", "Rank", "Student", "Class", "Mark",
+            ]]
+            current_mask = display["NO MATRIK"].astype(str) == current_matric
+            display = display.drop(columns=["NO MATRIK"])
             st.dataframe(
-                individual_progress[["Rank", "Student", "Class", "Mark"]],
+                highlight_current_rows(display, current_mask),
                 hide_index=True, width="stretch",
             )
     with progress_class:
         if class_progress.empty:
             st.info("Class progress leaderboard is not available.")
         else:
+            display = class_progress[[
+                "Rank", "Class", "Students", "Average mark",
+            ]]
             st.dataframe(
-                class_progress[[
-                    "Rank", "Class", "Students", "Average mark",
-                ]],
+                highlight_current_rows(
+                    display, display["Class"].astype(str) == current_class
+                ),
                 hide_index=True, width="stretch",
             )
 
@@ -3752,6 +3798,62 @@ def admin_quiz_page() -> None:
                     st.error(f"Question bank could not be published: {exc}")
 
 
+def render_incorrect_quiz_answers(
+    questions: list[dict[str, Any]], answers: dict[str, Any]
+) -> None:
+    """Show the correct answer and explanation for every incorrect response."""
+    incorrect = []
+    for question in questions:
+        question_id = str(question.get("id"))
+        if question_id not in answers:
+            continue
+        selected_index = int(answers[question_id])
+        correct_index = int(question.get("correct_index", 0))
+        if selected_index != correct_index:
+            incorrect.append((question, selected_index, correct_index))
+    if not incorrect:
+        st.success("Excellent — every answer is correct.")
+        return
+    st.subheader("Review incorrect answers")
+    option_letters = ("A", "B", "C", "D")
+    for number, (question, selected_index, correct_index) in enumerate(
+        incorrect, start=1
+    ):
+        options = question.get("options") or []
+        if isinstance(options, str):
+            try:
+                options = json.loads(options)
+            except json.JSONDecodeError:
+                options = []
+        with st.container(border=True):
+            st.markdown(f"**{number}.** {question.get('question', '')}")
+            selected_text = (
+                str(options[selected_index])
+                if 0 <= selected_index < len(options)
+                else "Unavailable"
+            )
+            correct_text = (
+                str(options[correct_index])
+                if 0 <= correct_index < len(options)
+                else "Unavailable"
+            )
+            selected_letter = (
+                option_letters[selected_index]
+                if 0 <= selected_index < len(option_letters)
+                else "—"
+            )
+            correct_letter = (
+                option_letters[correct_index]
+                if 0 <= correct_index < len(option_letters)
+                else "—"
+            )
+            st.error(f"Your answer: {selected_letter}. {selected_text}")
+            st.success(f"Correct answer: {correct_letter}. {correct_text}")
+            st.markdown(
+                f"**Explanation:** {question.get('explanation') or 'No explanation provided.'}"
+            )
+
+
 def quiz_page() -> None:
     heading(
         "Daily knowledge check",
@@ -3836,6 +3938,32 @@ def quiz_page() -> None:
                 f"{int(result['correct_count'])}/{int(result['total_questions'])} correct · "
                 f"{int(result['xp_awarded'])} XP awarded."
             )
+            saved_answers = result.get("answers") or {}
+            if isinstance(saved_answers, str):
+                try:
+                    saved_answers = json.loads(saved_answers)
+                except json.JSONDecodeError:
+                    saved_answers = {}
+            if isinstance(saved_answers, dict) and saved_answers:
+                question_ids = [
+                    int(question_id)
+                    for question_id in saved_answers
+                    if str(question_id).isdigit()
+                ]
+                if question_ids:
+                    review_questions = (
+                        client.table("quiz_questions")
+                        .select(
+                            "id,question,options,correct_index,explanation"
+                        )
+                        .in_("id", question_ids)
+                        .execute()
+                        .data
+                        or []
+                    )
+                    render_incorrect_quiz_answers(
+                        review_questions, saved_answers
+                    )
             return
         seen_question_ids: set[str] = set()
         for attempt in attempt_history:
@@ -3961,10 +4089,12 @@ def quiz_page() -> None:
                         f"{xp_awarded} XP simulated. Answers, attempt history "
                         "and XP were discarded; Supabase was not changed."
                     )
+                    render_incorrect_quiz_answers(daily_questions, answers)
                 elif not live:
                     st.success(
                         f"Demo result: {correct}/10 correct · {xp_awarded} XP."
                     )
+                    render_incorrect_quiz_answers(daily_questions, answers)
                 else:
                     try:
                         attempt = client.table("quiz_attempts").insert({
@@ -4000,7 +4130,9 @@ def quiz_page() -> None:
                         st.success(
                             f"{correct}/10 correct · {xp_awarded} XP awarded."
                         )
-                        st.rerun()
+                        render_incorrect_quiz_answers(
+                            daily_questions, answers
+                        )
                     except Exception as exc:
                         st.error(f"Quiz result could not be saved: {exc}")
 
