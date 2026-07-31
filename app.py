@@ -900,7 +900,6 @@ def generate_chapter_quiz_bank(
             "Secrets and restart the app.",
         )
     client = db()
-    created_quiz_id: int | None = None
     try:
         source_sections = []
         for _, material in materials.iterrows():
@@ -922,21 +921,85 @@ def generate_chapter_quiz_bank(
                 "Use PDF, DOCX, PPTX, TXT, MD or CSV source files.",
             )
         source_text = source_text[:100_000]
-        generated_questions: list[tuple[str, GeneratedQuestion]] = []
-        normalized_questions: set[str] = set()
         openai_client = OpenAI(api_key=api_key)
         model = str(
             st.secrets.get("OPENAI_QUIZ_MODEL", "")
             or os.getenv("OPENAI_QUIZ_MODEL", "")
             or "gpt-5.6-luna"
         )
+        material_ids = materials["id"].astype(int).tolist()
+        draft_rows = (
+            client.table("quizzes")
+            .select("*")
+            .eq("chapter", int(chapter))
+            .eq("status", "draft")
+            .eq("generated_by_ai", True)
+            .order("created_at", desc=True)
+            .execute()
+            .data
+        )
+        quiz_row = None
+        for draft in draft_rows:
+            saved_source_ids = {
+                int(value) for value in (draft.get("source_material_ids") or [])
+            }
+            if saved_source_ids == set(material_ids) and not draft.get(
+                "reviewed_at"
+            ):
+                quiz_row = draft
+                break
+        if quiz_row is None:
+            quiz_row = client.table("quizzes").insert({
+                "material_id": material_ids[0],
+                "source_material_ids": material_ids,
+                "chapter": int(chapter),
+                "title": f"C{chapter} AI question bank",
+                "instructions": (
+                    "Daily set: 2 easy, 5 medium and 3 hard questions."
+                ),
+                "xp_reward": 1,
+                "passing_score": 60,
+                "status": "draft",
+                "target_question_count": 200,
+                "generated_by_ai": True,
+                "created_by": st.session_state.user["id"],
+            }).execute().data[0]
+
+        quiz_id = int(quiz_row["id"])
+        existing_rows = (
+            client.table("quiz_questions")
+            .select("id,position,difficulty,question")
+            .eq("quiz_id", quiz_id)
+            .order("position")
+            .execute()
+            .data
+        )
+        normalized_questions = {
+            re.sub(r"\W+", " ", sanitize_quiz_text(row["question"]).lower())
+            .strip()
+            for row in existing_rows
+        }
+        existing_by_difficulty = {
+            difficulty: sum(
+                str(row.get("difficulty", "")).lower() == difficulty
+                for row in existing_rows
+            )
+            for difficulty in QUIZ_BANK_DISTRIBUTION
+        }
+        next_position = max(
+            [int(row.get("position", 0)) for row in existing_rows],
+            default=0,
+        ) + 1
+
         for difficulty, target_count in QUIZ_BANK_DISTRIBUTION.items():
-            remaining = target_count
-            batch_number = 1
+            remaining = max(
+                0, target_count - existing_by_difficulty[difficulty]
+            )
+            stalled_attempts = 0
             while remaining:
                 batch_size = min(20, remaining)
                 recent_questions = [
-                    item.question for _, item in generated_questions[-80:]
+                    row["question"] for row in existing_rows[-120:]
                 ]
                 response = openai_client.responses.parse(
                     model=model,
@@ -954,19 +1017,22 @@ def generate_chapter_quiz_bank(
                         {
                             "role": "user",
                             "content": (
+                                f"CHAPTER C{chapter} STUDY MATERIAL:\n{source_text}"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
                                 f"Create exactly {batch_size} {difficulty.upper()} "
-                                f"questions for Chapter C{chapter}. This is "
-                                f"{difficulty} batch {batch_number}. "
-                                f"Avoid these previously generated questions:\n"
-                                f"{json.dumps(recent_questions, ensure_ascii=False)}\n\n"
-                                f"STUDY MATERIAL:\n{source_text}"
+                                "questions. Avoid these existing questions:\n"
+                                f"{json.dumps(recent_questions, ensure_ascii=False)}"
                             ),
                         },
                     ],
                     text_format=GeneratedQuiz,
                 )
                 generated = response.output_parsed
-                unique_batch = []
+                unique_batch: list[GeneratedQuestion] = []
                 for item in generated.questions:
                     item.question = sanitize_quiz_text(item.question)
                     item.options = [
@@ -976,71 +1042,63 @@ def generate_chapter_quiz_bank(
                     normalized = re.sub(
                         r"\W+", " ", item.question.lower()
                     ).strip()
-                    if normalized and normalized not in normalized_questions:
+                    valid = (
+                        normalized
+                        and normalized not in normalized_questions
+                        and len(item.options) == 4
+                        and all(item.options)
+                        and len(set(item.options)) == 4
+                        and bool(item.explanation)
+                    )
+                    if valid:
                         normalized_questions.add(normalized)
                         unique_batch.append(item)
-                if len(unique_batch) != batch_size:
-                    return (
-                        False,
-                        f"AI returned duplicate or incomplete {difficulty} "
-                        "questions. Generate the bank again.",
-                    )
-                generated_questions.extend(
-                    (difficulty, item) for item in unique_batch
+                if not unique_batch:
+                    stalled_attempts += 1
+                    if stalled_attempts >= 3:
+                        saved_total = len(existing_rows)
+                        return (
+                            False,
+                            f"Generation paused after saving {saved_total}/200 "
+                            f"questions. OpenAI repeatedly returned duplicate "
+                            f"{difficulty} questions. Click Generate again to resume "
+                            "without paying to regenerate saved questions.",
+                        )
+                    continue
+
+                rows_to_save = []
+                for item in unique_batch[:remaining]:
+                    rows_to_save.append({
+                        "quiz_id": quiz_id,
+                        "position": next_position,
+                        "difficulty": difficulty,
+                        "question": item.question,
+                        "options": item.options,
+                        "correct_index": item.correct_index,
+                        "explanation": item.explanation,
+                    })
+                    next_position += 1
+                inserted = (
+                    client.table("quiz_questions")
+                    .insert(rows_to_save)
+                    .execute()
+                    .data
                 )
-                remaining -= batch_size
-                batch_number += 1
-        if len(generated_questions) != 200:
-            return False, "The AI question bank was incomplete. Please try again."
-        material_ids = materials["id"].astype(int).tolist()
-        quiz_row = client.table("quizzes").insert({
-            "material_id": material_ids[0],
-            "source_material_ids": material_ids,
-            "chapter": int(chapter),
-            "title": f"C{chapter} AI question bank",
-            "instructions": (
-                "Daily set: 2 easy, 5 medium and 3 hard questions."
-            ),
-            "xp_reward": 1,
-            "passing_score": 60,
-            "status": "draft",
-            "target_question_count": 200,
-            "generated_by_ai": True,
-            "created_by": st.session_state.user["id"],
-        }).execute().data[0]
-        created_quiz_id = int(quiz_row["id"])
-        questions = [
-            {
-                "quiz_id": quiz_row["id"],
-                "position": index,
-                "difficulty": difficulty,
-                "question": item.question,
-                "options": item.options,
-                "correct_index": item.correct_index,
-                "explanation": item.explanation,
-            }
-            for index, (difficulty, item) in enumerate(
-                generated_questions, start=1
-            )
-        ]
-        for start in range(0, len(questions), 100):
-            client.table("quiz_questions").insert(
-                questions[start:start + 100]
-            ).execute()
+                existing_rows.extend(inserted or rows_to_save)
+                remaining -= len(rows_to_save)
+                stalled_attempts = 0
+
         return (
             True,
-            f"C{chapter} draft bank created with 200 questions: "
+            f"C{chapter} draft bank completed with 200 saved questions: "
             "40 easy, 100 medium and 60 hard.",
         )
     except Exception as exc:
-        if created_quiz_id is not None:
-            try:
-                client.table("quizzes").delete().eq(
-                    "id", created_quiz_id
-                ).execute()
-            except Exception:
-                pass
-        return False, f"Quiz generation failed: {exc}"
+        return (
+            False,
+            "Generation paused safely. All previously saved questions remain "
+            f"in Supabase and the next attempt will resume. Details: {exc}",
+        )
 
 
 def metric(label: str, value: str, note: str = "") -> None:
@@ -3089,10 +3147,11 @@ def admin_quiz_page() -> None:
             )
             st.caption(
                 "Exactly 40 easy, 100 medium and 60 hard questions will be "
-                "generated in 10 structured AI batches. This can take several minutes."
+                "saved incrementally. If generation stops, run it again to resume "
+                "from the saved count instead of regenerating completed batches."
             )
             generate = st.form_submit_button(
-                "Generate 200-question draft bank",
+                "Generate or resume 200-question bank",
                 type="primary",
                 disabled=not bool(openai_api_key()),
             )
@@ -3156,7 +3215,12 @@ def admin_quiz_page() -> None:
             )
             review_frame = pd.DataFrame()
 
-        if not review_frame.empty:
+        if review_frame.empty:
+            st.info(
+                "This draft currently has 0 saved questions. Use Generate or "
+                "resume to continue building it."
+            )
+        else:
             difficulty_filter = st.segmented_control(
                 "Review difficulty",
                 ["all", "easy", "medium", "hard"],
@@ -3285,6 +3349,21 @@ def admin_quiz_page() -> None:
                     st.error(f"Question bank could not be approved: {exc}")
 
     st.subheader("Quiz library")
+    if quiz_live:
+        try:
+            question_inventory = pd.DataFrame(
+                db().table("quiz_questions").select("quiz_id").execute().data
+            )
+        except Exception:
+            question_inventory = pd.DataFrame(columns=["quiz_id"])
+    else:
+        question_inventory = pd.DataFrame(columns=["quiz_id"])
+    saved_counts = (
+        question_inventory.groupby("quiz_id").size().to_dict()
+        if not question_inventory.empty
+        and "quiz_id" in question_inventory.columns
+        else {}
+    )
     if quizzes.empty:
         st.info("No quizzes created yet.")
         return
@@ -3295,7 +3374,8 @@ def admin_quiz_page() -> None:
             middle.caption(
                 f"C{quiz.get('chapter', '—')} · "
                 f"{str(quiz['status']).title()} · "
-                f"{quiz.get('target_question_count', 200)} questions"
+                f"{int(saved_counts.get(quiz['id'], 0))}/"
+                f"{int(quiz.get('target_question_count', 200))} saved"
             )
             if quiz["status"] == "draft" and right.button(
                 "Publish",
