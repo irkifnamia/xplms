@@ -2374,11 +2374,6 @@ def request_xp_page() -> None:
 
     request_tab, list_tab = st.tabs(["REQUEST XP", "MY XP REQUEST"])
     with request_tab:
-        st.info(
-            "Study group and Extra practice requests are limited to 2 requests "
-            "per type per day. Extra practice includes past-year questions and "
-            "other additional exercises."
-        )
         with st.form("student_xp_request", clear_on_submit=True):
             claim_type = st.selectbox(
                 "XP type",
@@ -2479,15 +2474,15 @@ def render_xp_streak_sop() -> None:
             "Daily request quota": "2 per day",
         },
         {
-            "XP event": "In-app quiz attempt",
+            "XP event": "Completed in-app quiz set",
             "Method": "Automatic",
-            "Points": "1 XP per answered question",
+            "Points": "5 XP for completing all 10 questions",
             "Daily request quota": "—",
         },
         {
             "XP event": "Correct quiz answer",
             "Method": "Automatic bonus",
-            "Points": "Additional 1 XP",
+            "Points": "1 XP per correct answer (maximum 10 XP)",
             "Daily request quota": "—",
         },
     ])
@@ -3906,9 +3901,7 @@ def quiz_page() -> None:
         .to_dict("records")
     )
     st.caption(
-        "Today's set: 2 easy, 5 medium and 3 hard questions. "
-        "Each answered question earns 1 XP and each correct answer earns "
-        "1 additional XP."
+        "Full complete attempt : 5XP , Each correct : 1XP"
     )
     with st.form(f"daily_quiz_{chapter}_{today}"):
         answers = {}
@@ -3942,7 +3935,7 @@ def quiz_page() -> None:
                 )
                 total_questions = len(daily_questions)
                 score = correct / total_questions * 100
-                xp_awarded = total_questions + correct
+                xp_awarded = 5 + correct
                 if is_admin_student_preview():
                     st.success(
                         f"Student preview result: {correct}/10 correct · "
@@ -3975,6 +3968,7 @@ def quiz_page() -> None:
                             "source_id": f"daily-quiz-{chapter}-{today}",
                             "reason": (
                                 f"Daily C{chapter} quiz: "
+                                f"5 XP full completion + {correct} XP for "
                                 f"{correct}/{total_questions} correct"
                             ),
                             "award_mode": "automatic",
@@ -3983,6 +3977,7 @@ def quiz_page() -> None:
                         client.table("quiz_attempts").update({
                             "xp_event_id": event["id"]
                         }).eq("id", attempt["id"]).execute()
+                        st.cache_data.clear()
                         st.success(
                             f"{correct}/10 correct · {xp_awarded} XP awarded."
                         )
