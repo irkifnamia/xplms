@@ -358,6 +358,19 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   margin:auto;
   filter:drop-shadow(0 3px 4px rgba(18,42,76,.13));
 }
+.katex-display {
+  overflow-x:auto;
+  overflow-y:hidden;
+  padding:.2rem 0;
+}
+.quiz-question {
+  margin:1rem 0 .35rem;
+  padding:14px 16px;
+  background:#fff;
+  border:1px solid var(--line);
+  border-left:4px solid var(--brand);
+  border-radius:14px;
+}
 .result-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
 .result-card { background:#fff; border:1px solid var(--line); border-top:4px solid var(--brand);
   border-radius:16px; padding:17px 18px; box-shadow:0 4px 14px rgba(31,93,170,.07); }
@@ -1010,8 +1023,14 @@ def generate_chapter_quiz_bank(
                                 "Create fair educational multiple-choice questions "
                                 "using only the supplied study material. Every question "
                                 "must have four plausible options, exactly one correct "
-                                "answer, and a concise explanation. Do not use trick "
-                                "questions, outside knowledge, duplicates, or near-duplicates."
+                                "answer, and a concise explanation. Format every "
+                                "mathematical expression as valid LaTeX wrapped in single "
+                                "dollar delimiters. Use structures such as "
+                                "$\\frac{x+1}{x-2}$, $\\sqrt{x-2}$, $x^{2}$ and "
+                                "$(f\\circ g)(x)$. Do not flatten fractions or roots, "
+                                "and do not use Unicode math symbols as substitutes for "
+                                "LaTeX. Do not use trick questions, outside knowledge, "
+                                "duplicates, or near-duplicates."
                             ),
                         },
                         {
@@ -3267,6 +3286,15 @@ def admin_quiz_page() -> None:
             saved_options = list(saved_options)
             while len(saved_options) < 4:
                 saved_options.append("")
+            st.markdown("**Rendered mathematical preview**")
+            st.markdown(str(selected_question["question"]))
+            for option_index, option in enumerate(saved_options):
+                st.markdown(
+                    f"**{('A', 'B', 'C', 'D')[option_index]}.** {option}"
+                )
+            st.caption(
+                "Expressions enclosed in $...$ render as mathematical notation."
+            )
             with st.form("review_question_form"):
                 edited_question = st.text_area(
                     "Question", value=str(selected_question["question"])
@@ -3594,13 +3622,21 @@ def quiz_page() -> None:
             options = question["options"]
             if isinstance(options, str):
                 options = json.loads(options)
-            answers[str(question["id"])] = st.radio(
-                f"{number}. {question['question']}",
-                range(len(options)),
-                format_func=lambda index, opts=options: opts[index],
-                index=None,
-                key=f"daily_answer_{chapter}_{today}_{question['id']}",
-            )
+            with st.container(border=True):
+                st.markdown(f"**{number}.** {question['question']}")
+                for option_index, option in enumerate(options):
+                    st.markdown(
+                        f"**{('A', 'B', 'C', 'D')[option_index]}.** {option}"
+                    )
+                answers[str(question["id"])] = st.radio(
+                    f"Answer for question {number}",
+                    range(len(options)),
+                    format_func=lambda index: ("A", "B", "C", "D")[index],
+                    index=None,
+                    key=f"daily_answer_{chapter}_{today}_{question['id']}",
+                    label_visibility="collapsed",
+                    horizontal=True,
+                )
         if st.form_submit_button("Submit today's quiz", type="primary"):
             if any(answer is None for answer in answers.values()):
                 st.error("Answer all 10 questions before submitting.")
