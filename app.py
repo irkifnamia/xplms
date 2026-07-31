@@ -72,13 +72,6 @@ BADGE_IMAGE_PATHS = {
 }
 BADGE_IMAGE_DATA = {
     family: {
-        name: base64.b64encode(path.read_bytes()).decode("ascii")
-        for name, path in paths.items()
-    }
-    for family, paths in BADGE_IMAGE_PATHS.items()
-}
-LOGIN_BADGE_IMAGE_DATA = {
-    family: {
         name: base64.b64encode(
             (BADGE_ASSET_DIR / "login" / f"{path.stem}.webp").read_bytes()
         ).decode("ascii")
@@ -86,6 +79,7 @@ LOGIN_BADGE_IMAGE_DATA = {
     }
     for family, paths in BADGE_IMAGE_PATHS.items()
 }
+LOGIN_BADGE_IMAGE_DATA = BADGE_IMAGE_DATA
 LOGO_IMAGE = Image.open(LOGO_PATH)
 LOGO_DATA = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
 
@@ -882,13 +876,69 @@ def ensure_preview_student() -> dict[str, Any] | None:
         return None
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_table_rows(name: str) -> list[dict[str, Any]]:
+    """Keep shared Supabase reads out of Streamlit's frequent reruns."""
+    client = db()
+    if not client:
+        raise RuntimeError("Supabase is unavailable.")
+    return client.table(name).select("*").execute().data or []
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_student_rows(name: str, matric: str) -> list[dict[str, Any]]:
+    """Cache a single student's record without transferring the full table."""
+    client = db()
+    if not client:
+        raise RuntimeError("Supabase is unavailable.")
+    return (
+        client.table(name)
+        .select("*")
+        .eq("NO MATRIK", matric)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_filtered_rows(
+    name: str, column: str, value: str
+) -> list[dict[str, Any]]:
+    """Cache short-lived user-scoped lists such as XP history and requests."""
+    client = db()
+    if not client:
+        raise RuntimeError("Supabase is unavailable.")
+    return (
+        client.table(name)
+        .select("*")
+        .eq(column, value)
+        .execute()
+        .data
+        or []
+    )
+
+
+@st.cache_data(ttl=540, show_spinner=False)
+def _cached_material_url(file_path: str) -> str:
+    """Reuse signed material URLs instead of signing every file on each rerun."""
+    client = db()
+    if not client:
+        raise RuntimeError("Supabase is unavailable.")
+    signed = client.storage.from_("materials").create_signed_url(file_path, 600)
+    url = signed.get("signedURL") or signed.get("signedUrl")
+    if not url:
+        raise ValueError("No signed material URL returned.")
+    return str(url)
+
+
 def fetch_table(name: str, fallback: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     if is_demo():
         return fallback.copy(), False
-    client = db()
-    if client:
+    if db():
         try:
-            rows = client.table(name).select("*").execute().data
+            rows = _cached_table_rows(name)
             return (pd.DataFrame(rows), True) if rows else (fallback.copy(), True)
         except Exception:
             pass
@@ -901,17 +951,32 @@ def fetch_student_row(
     """Fetch one student's row instead of transferring the whole table."""
     if is_demo():
         return fallback.head(1).copy(), False
-    client = db()
-    if client and matric:
+    if db() and matric:
         try:
-            rows = (
-                client.table(name).select("*")
-                .eq("NO MATRIK", str(matric)).limit(1).execute().data
-            )
+            rows = _cached_student_rows(name, str(matric))
             return pd.DataFrame(rows), True
         except Exception:
             pass
     return fallback.head(0).copy(), False
+
+
+def fetch_filtered_table(
+    name: str,
+    column: str,
+    value: Any,
+    fallback: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, bool]:
+    """Fetch only matching rows for student-scoped histories."""
+    fallback = fallback if fallback is not None else pd.DataFrame()
+    if is_demo():
+        return fallback.copy(), False
+    if db() and value is not None:
+        try:
+            rows = _cached_filtered_rows(name, column, str(value))
+            return pd.DataFrame(rows), True
+        except Exception:
+            pass
+    return fallback.copy(), False
 
 
 def upsert_rows(name: str, frame: pd.DataFrame) -> tuple[bool, str]:
@@ -923,6 +988,7 @@ def upsert_rows(name: str, frame: pd.DataFrame) -> tuple[bool, str]:
     try:
         clean = frame.where(pd.notna(frame), None).to_dict("records")
         client.table(name).upsert(clean).execute()
+        st.cache_data.clear()
         return True, f"{len(clean)} records saved."
     except Exception as exc:
         return False, f"Could not save records: {exc}"
@@ -2302,11 +2368,9 @@ def _legacy_student_leaderboard_page() -> None:
 def request_xp_page() -> None:
     heading("", "Request XP")
     user = current_user()
-    claims, live = fetch_table("xp_claims", pd.DataFrame())
-    if live and "NO MATRIK" in claims.columns:
-        claims = claims[
-            claims["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
-        ]
+    claims, live = fetch_filtered_table(
+        "xp_claims", "NO MATRIK", user.get("no_matrik")
+    )
 
     request_tab, list_tab = st.tabs(["REQUEST XP", "MY XP REQUEST"])
     with request_tab:
@@ -2504,7 +2568,7 @@ def render_badge_cards(
         image_data = BADGE_IMAGE_DATA[family][badge]
         cards.append(
             f'<div class="badge-card{state_class}">'
-            f'<img src="data:image/png;base64,{image_data}" '
+            f'<img src="data:image/webp;base64,{image_data}" '
             f'alt="{html.escape(f"{family} {badge} badge")}">'
             f'<div class="badge-name">{html.escape(badge)}</div>'
             f'<div class="badge-requirement">{html.escape(requirement)}</div>'
@@ -2520,58 +2584,35 @@ def render_badge_cards(
 def my_xp_page() -> None:
     heading("", "XP Journey")
     user = current_user()
-    individuals, _, months, default_month = leaderboard_data()
-    selected_month = st.selectbox(
-        "XP month", months, index=months.index(default_month),
+    xp_record, _ = fetch_student_row(
+        "stud_xp",
+        user.get("no_matrik"),
+        pd.DataFrame([{"NO MATRIK": "S24001", "XP": 2460}]),
     )
-    if selected_month != default_month:
-        individuals, _, _, _ = leaderboard_data(selected_month)
-    own = individuals[
-        individuals["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
-    ] if not individuals.empty else pd.DataFrame()
-    if own.empty and is_demo():
-        own = individuals.head(1)
-    row = own.iloc[0] if not own.empty else None
-    current_xp = int(row["Overall XP"]) if row is not None else 0
-    if row is None:
-        xp_record, _ = fetch_student_row(
-            "stud_xp",
-            user.get("no_matrik"),
-            pd.DataFrame(columns=["NO MATRIK", "XP"]),
+    current_xp = 0
+    if not xp_record.empty:
+        xp_value = xp_record.iloc[0].get(
+            "XP", xp_record.iloc[0].get("xp", 0)
         )
-        if not xp_record.empty:
-            xp_value = xp_record.iloc[0].get(
-                "XP", xp_record.iloc[0].get("xp", 0)
-            )
-            numeric_xp = pd.to_numeric(xp_value, errors="coerce")
-            current_xp = int(numeric_xp) if pd.notna(numeric_xp) else 0
-    history, history_live = fetch_table("xp_events", pd.DataFrame())
-    if history_live and "NO MATRIK" in history.columns:
-        history = history[
-            history["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
-        ]
-
-    earned, earned_live = fetch_table("student_badges", pd.DataFrame())
-    if earned_live and "NO MATRIK" in earned.columns:
-        earned = earned[
-            earned["NO MATRIK"].astype(str) == str(user.get("no_matrik"))
-        ]
-    current_streak = int(row.get("Current Streak", 0)) if row is not None else 0
-    if row is None:
-        streaks, _ = streak_summary()
-        if not streaks.empty and "NO MATRIK" in streaks.columns:
-            own_streak = streaks[
-                streaks["NO MATRIK"].astype(str)
-                == str(user.get("no_matrik"))
-            ]
-            if not own_streak.empty:
-                streak_value = pd.to_numeric(
-                    own_streak.iloc[0].get("current_streak", 0),
-                    errors="coerce",
-                )
-                current_streak = (
-                    int(streak_value) if pd.notna(streak_value) else 0
-                )
+        numeric_xp = pd.to_numeric(xp_value, errors="coerce")
+        current_xp = int(numeric_xp) if pd.notna(numeric_xp) else 0
+    history, history_live = fetch_filtered_table(
+        "xp_events", "NO MATRIK", user.get("no_matrik")
+    )
+    earned, earned_live = fetch_filtered_table(
+        "student_badges", "NO MATRIK", user.get("no_matrik")
+    )
+    streaks, _ = fetch_student_row(
+        "student_streak_summary",
+        user.get("no_matrik"),
+        pd.DataFrame([{"NO MATRIK": "S24001", "current_streak": 8}]),
+    )
+    current_streak = 0
+    if not streaks.empty:
+        streak_value = pd.to_numeric(
+            streaks.iloc[0].get("current_streak", 0), errors="coerce"
+        )
+        current_streak = int(streak_value) if pd.notna(streak_value) else 0
     if earned_live and not earned.empty:
         if "badge_family" in earned.columns:
             xp_names = set(
@@ -2849,12 +2890,7 @@ def render_admin_material_view(
             )
             if live and item.get("file_path"):
                 try:
-                    signed = db().storage.from_("materials").create_signed_url(
-                        str(item["file_path"]), 600
-                    )
-                    url = signed.get("signedURL") or signed.get("signedUrl")
-                    if not url:
-                        raise ValueError("No signed URL returned.")
+                    url = _cached_material_url(str(item["file_path"]))
                     c3.link_button("View", url, width="stretch")
                 except Exception:
                     c3.button(
@@ -3148,12 +3184,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
             )
             if live and item.get("file_path"):
                 try:
-                    signed = db().storage.from_("materials").create_signed_url(
-                        str(item["file_path"]), 600
-                    )
-                    url = signed.get("signedURL") or signed.get("signedUrl")
-                    if not url:
-                        raise ValueError("No signed material URL returned.")
+                    url = _cached_material_url(str(item["file_path"]))
                     c3.link_button(
                         "Download",
                         url,
