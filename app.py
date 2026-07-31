@@ -904,6 +904,7 @@ def openai_api_key() -> str:
 def generate_chapter_quiz_bank(
     materials: pd.DataFrame,
     chapter: int,
+    discard_existing: bool = False,
 ) -> tuple[bool, str]:
     api_key = openai_api_key()
     if not api_key or OpenAI is None:
@@ -951,6 +952,13 @@ def generate_chapter_quiz_bank(
             .execute()
             .data
         )
+        if discard_existing:
+            for draft in draft_rows:
+                if not draft.get("reviewed_at"):
+                    client.table("quizzes").delete().eq(
+                        "id", draft["id"]
+                    ).execute()
+            draft_rows = []
         quiz_row = None
         for draft in draft_rows:
             saved_source_ids = {
@@ -3164,15 +3172,39 @@ def admin_quiz_page() -> None:
                 default=list(labels),
                 format_func=lambda value: labels[value],
             )
+            generation_mode = st.radio(
+                "Generation mode",
+                ["Resume saved draft", "Discard draft and start new LaTeX bank"],
+                help=(
+                    "Resume keeps every saved question. Discard permanently "
+                    "deletes unreviewed draft questions for this chapter."
+                ),
+            )
+            discard_existing = generation_mode.startswith("Discard")
+            discard_confirmed = (
+                st.checkbox(
+                    f"I understand that the existing C{chapter} draft "
+                    "questions will be permanently deleted.",
+                    value=False,
+                )
+                if discard_existing else True
+            )
             st.caption(
                 "Exactly 40 easy, 100 medium and 60 hard questions will be "
                 "saved incrementally. If generation stops, run it again to resume "
                 "from the saved count instead of regenerating completed batches."
             )
             generate = st.form_submit_button(
-                "Generate or resume 200-question bank",
+                (
+                    "Discard draft and generate new LaTeX bank"
+                    if discard_existing
+                    else "Generate or resume 200-question bank"
+                ),
                 type="primary",
-                disabled=not bool(openai_api_key()),
+                disabled=(
+                    not bool(openai_api_key())
+                    or (discard_existing and not discard_confirmed)
+                ),
             )
             if generate:
                 if not material_ids:
@@ -3185,7 +3217,9 @@ def admin_quiz_page() -> None:
                         f"Generating the balanced C{chapter} question bank…"
                     ):
                         ok, message = generate_chapter_quiz_bank(
-                            selected, int(chapter)
+                            selected,
+                            int(chapter),
+                            discard_existing=discard_existing,
                         )
                     (st.success if ok else st.error)(message)
 
