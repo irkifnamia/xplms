@@ -2767,15 +2767,39 @@ def student_leaderboard_page() -> None:
     earned_badges, badges_live = fetch_table(
         "student_badges", pd.DataFrame()
     )
-    badge_matrix = pd.DataFrame()
+    badge_columns = [
+        f"{family_name} {badge.upper()}"
+        for family_name in ("XP", "STREAK")
+        for _, badge in (
+            BADGE_LEVELS
+            if family_name == "XP"
+            else STREAK_BADGE_LEVELS
+        )
+    ]
+    badge_matrix = (
+        pd.DataFrame({
+            "Class": sorted(
+                individuals["Class"].fillna("Unassigned")
+                .astype(str).unique().tolist()
+            )
+        })
+        if not individuals.empty and "Class" in individuals.columns
+        else pd.DataFrame(columns=["Class"])
+    )
     if (
         badges_live
         and not earned_badges.empty
         and {"NO MATRIK", "badge_name"}.issubset(earned_badges.columns)
         and not individuals.empty
     ):
-        badge_rows = earned_badges.merge(
-            individuals[["NO MATRIK", "Class"]].drop_duplicates(),
+        badge_rows = earned_badges.copy()
+        badge_rows["NO MATRIK"] = badge_rows["NO MATRIK"].astype(str)
+        student_classes = individuals[[
+            "NO MATRIK", "Class"
+        ]].drop_duplicates().copy()
+        student_classes["NO MATRIK"] = student_classes["NO MATRIK"].astype(str)
+        badge_rows = badge_rows.merge(
+            student_classes,
             on="NO MATRIK",
             how="left",
         )
@@ -2787,7 +2811,7 @@ def student_leaderboard_page() -> None:
         badge_rows["Badge"] = (
             family + " " + badge_rows["badge_name"].astype(str).str.upper()
         )
-        badge_matrix = (
+        badge_counts = (
             badge_rows.pivot_table(
                 index="Class",
                 columns="Badge",
@@ -2797,19 +2821,17 @@ def student_leaderboard_page() -> None:
             )
             .reset_index()
         )
-        badge_columns = [
-            f"{family_name} {badge.upper()}"
-            for family_name in ("XP", "STREAK")
-            for _, badge in (
-                BADGE_LEVELS
-                if family_name == "XP"
-                else STREAK_BADGE_LEVELS
-            )
-        ]
-        for column in badge_columns:
-            if column not in badge_matrix.columns:
-                badge_matrix[column] = 0
-        badge_matrix = badge_matrix[["Class", *badge_columns]]
+        badge_matrix = badge_matrix.merge(
+            badge_counts, on="Class", how="left"
+        )
+    for column in badge_columns:
+        if column not in badge_matrix.columns:
+            badge_matrix[column] = 0
+    if not badge_matrix.empty:
+        badge_matrix[badge_columns] = (
+            badge_matrix[badge_columns].fillna(0).astype(int)
+        )
+    badge_matrix = badge_matrix[["Class", *badge_columns]]
 
     (
         test_individual_tab,
