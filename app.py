@@ -3275,27 +3275,31 @@ def admin_quiz_page() -> None:
             pd.to_numeric(quiz_sources["chapter"], errors="coerce")
             .dropna().astype(int).unique().tolist()
         )
-        with st.form("admin_generate_quiz"):
-            chapter = st.selectbox(
-                "Chapter", chapters, format_func=lambda value: f"C{value}"
+        chapter = st.selectbox(
+            "Chapter",
+            chapters,
+            format_func=lambda value: f"C{value}",
+            key="admin_quiz_generation_chapter",
+        )
+        chapter_materials = quiz_sources[
+            pd.to_numeric(
+                quiz_sources["chapter"], errors="coerce"
+            ) == int(chapter)
+        ]
+        labels = {
+            int(row["id"]): (
+                f"{row['title']} · {row.get('material_type', 'Other')} "
+                f"· {row.get('type', 'FILE')}"
             )
-            chapter_materials = quiz_sources[
-                pd.to_numeric(
-                    quiz_sources["chapter"], errors="coerce"
-                ) == int(chapter)
-            ]
-            labels = {
-                int(row["id"]): (
-                    f"{row['title']} · {row.get('material_type', 'Other')} "
-                    f"· {row.get('type', 'FILE')}"
-                )
-                for _, row in chapter_materials.iterrows()
-            }
+            for _, row in chapter_materials.iterrows()
+        }
+        with st.form(f"admin_generate_quiz_c{chapter}"):
             material_ids = st.multiselect(
                 "Materials to feed to OpenAI",
                 list(labels),
                 default=list(labels),
                 format_func=lambda value: labels[value],
+                key=f"admin_quiz_materials_c{chapter}",
             )
             generation_mode = st.radio(
                 "Generation mode",
