@@ -14,6 +14,9 @@ buttonRadius = "0.65rem"
 borderColor = "#D3DCE6"
 showWidgetBorder = true
 
+[client]
+toolbarMode = "viewer"
+
 [theme.sidebar]
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F4F7FA"
