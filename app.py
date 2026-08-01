@@ -1400,8 +1400,8 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Profile", "Materials", "XP Journey", "SOP", "Leaderboard",
-                "Results", "Request XP", "Quiz"
+                "Profile", "Materials", "Results", "Leaderboard", "Quiz",
+                "XP: Journey", "XP: SOP", "XP: Request",
             ],
             "Admin": [
                 "User access",
@@ -1443,8 +1443,8 @@ def sidebar(role: str, name: str) -> str:
 def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
-            "Profile", "Materials", "XP Journey", "SOP", "Leaderboard",
-            "Results", "Request XP", "Quiz",
+            "Profile", "Materials", "Results", "Leaderboard", "Quiz",
+            "XP: Journey", "XP: SOP", "XP: Request",
         ],
         "Admin": [
             "User access", "CRUD", "Material", "Quiz", "Award XP", "SOP",
@@ -2402,7 +2402,7 @@ def _legacy_student_leaderboard_page() -> None:
 
 
 def request_xp_page() -> None:
-    heading("", "Request XP")
+    heading("", "XP: Request")
     user = current_user()
     claims, live = fetch_filtered_table(
         "xp_claims", "NO MATRIK", user.get("no_matrik")
@@ -2574,8 +2574,8 @@ def render_badge_sop() -> None:
     )
 
 
-def sop_page() -> None:
-    heading("", "SOP")
+def sop_page(title: str = "SOP") -> None:
+    heading("", title)
     xp_tab, badge_tab = st.tabs(["XP & STREAK SOP", "BADGE SOP"])
     with xp_tab:
         render_xp_streak_sop()
@@ -2648,7 +2648,7 @@ def highlight_current_class_column(
 
 
 def my_xp_page() -> None:
-    heading("", "XP Journey")
+    heading("", "XP: Journey")
     user = current_user()
     xp_record, _ = fetch_student_row(
         "stud_xp",
@@ -5979,11 +5979,11 @@ def main() -> None:
             "Results": progress_page,
             "Materials": materials_page,
             "Quiz": quiz_page,
-            "XP Journey": my_xp_page,
-            "SOP": sop_page,
+            "XP: Journey": my_xp_page,
+            "XP: SOP": lambda: sop_page("XP: SOP"),
             "Leaderboard": student_leaderboard_page,
             "Profile": profile_page,
-            "Request XP": request_xp_page,
+            "XP: Request": request_xp_page,
         }[page]()
     else:
         {
