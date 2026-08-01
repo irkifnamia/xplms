@@ -2524,7 +2524,11 @@ def render_xp_streak_sop() -> None:
             "Daily request quota": "—",
         },
     ])
-    st.dataframe(sop, hide_index=True, width="stretch")
+    st.dataframe(
+        sop.set_index("XP event").rename_axis("XP event"),
+        hide_index=False,
+        width="stretch",
+    )
     st.subheader("STREAK SOP")
     streak_sop = pd.DataFrame([
         {
@@ -2538,7 +2542,13 @@ def render_xp_streak_sop() -> None:
             "Streak date": "Original request date",
         },
     ])
-    st.dataframe(streak_sop, hide_index=True, width="stretch")
+    st.dataframe(
+        streak_sop.set_index("Qualifying activity").rename_axis(
+            "Qualifying activity"
+        ),
+        hide_index=False,
+        width="stretch",
+    )
     st.markdown(
         "- One qualifying activity is enough to capture the streak day; additional "
         "qualifying activities on the same date do not add extra days.\n"
