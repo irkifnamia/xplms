@@ -3377,10 +3377,11 @@ def student_leaderboard_one_page() -> None:
                 "Monthly Rank", "Overall Rank", "Students",
                 "Monthly XP Average", "Monthly XP Total",
                 "Overall XP Average", "Overall XP Total",
-            ]].transpose().rename_axis("Metric").reset_index()
+            ]].transpose().rename_axis("Metric")
             st.dataframe(
                 highlight_current_class_column(display, ctx["current_team"]),
-                hide_index=True, width="stretch",
+                hide_index=False,
+                width="stretch",
             )
 
 
@@ -3767,6 +3768,17 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
     if type_filter != "All types" and "material_type" in materials.columns:
         materials = materials[materials["material_type"] == type_filter]
 
+    materials = materials.copy()
+    if not materials.empty:
+        numbering_columns = [
+            column for column in ["chapter", "material_type"]
+            if column in materials.columns
+        ]
+        materials["_file_number"] = (
+            materials.groupby(numbering_columns, dropna=False).cumcount() + 1
+            if numbering_columns else range(1, len(materials) + 1)
+        )
+
     if materials.empty:
         st.info(
             "No materials have been uploaded yet."
@@ -3776,8 +3788,12 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
 
     for i, item in materials.iterrows():
         with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([5, 2.4, 1.2, 1.6])
-            c1.markdown(f"**{item['title']}**  \n{item['course']}")
+            c1, c2, c3, c4, c5 = st.columns([4.4, 2.2, 1, 1.2, 1.4])
+            file_number = int(item.get("_file_number", 1))
+            c1.markdown(
+                f"**{str(item['title']).upper()} ({file_number})**  \n"
+                f"{item['course']}"
+            )
             c2.caption(
                 f"C{item.get('chapter', '—')} · "
                 f"{item.get('material_type', 'Other')} · {item.get('type', 'FILE')}"
@@ -3785,7 +3801,13 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
             if live and item.get("file_path"):
                 try:
                     url = _cached_material_url(str(item["file_path"]))
-                    c3.link_button(
+                    if c3.button(
+                        "View", key=f"view_material_{i}", width="stretch"
+                    ):
+                        st.session_state.student_material_preview = str(
+                            item["file_path"]
+                        )
+                    c4.link_button(
                         "Download",
                         url,
                         width="stretch",
@@ -3797,12 +3819,40 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                         disabled=True,
                         width="stretch",
                     )
-            if quiz_tools and live and item.get("file_path") and c4.button("Generate quiz", key=f"quiz_material_{i}"):
+            if quiz_tools and live and item.get("file_path") and c5.button("Generate quiz", key=f"quiz_material_{i}"):
                 with st.spinner("Generating a 200-question draft bank…"):
                     ok, message = generate_chapter_quiz_bank(
                         pd.DataFrame([item]), int(item.get("chapter"))
                     )
                 (st.success if ok else st.error)(message)
+
+            if (
+                live
+                and item.get("file_path")
+                and st.session_state.get("student_material_preview")
+                == str(item.get("file_path"))
+            ):
+                file_type = str(item.get("type", "")).lower()
+                st.markdown("**Preview**")
+                if file_type in {
+                    "jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff"
+                }:
+                    st.image(url, width="stretch")
+                elif file_type == "pdf":
+                    safe_url = html.escape(url, quote=True)
+                    st.markdown(
+                        f'<iframe src="{safe_url}" width="100%" height="650" '
+                        'style="border:1px solid #cbd8e6;border-radius:10px"></iframe>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.info("This file type uses your browser's document viewer.")
+                    st.link_button("View file", url)
+                if st.button(
+                    "Close preview", key=f"close_material_preview_{i}"
+                ):
+                    st.session_state.pop("student_material_preview", None)
+                    st.rerun()
 
     if quiz_tools:
         st.subheader("Quiz management")
