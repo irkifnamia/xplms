@@ -1400,7 +1400,8 @@ def sidebar(role: str, name: str) -> str:
                 st.rerun()
         menus = {
             "Student": [
-                "Profile", "Materials", "Results", "Leaderboard", "Quiz",
+                "Profile", "Materials", "Results", "Leaderboard 1",
+                "Leaderboard 2", "Quiz",
                 "XP: Journey", "XP: SOP", "XP: Request",
             ],
             "Admin": [
@@ -1443,7 +1444,8 @@ def sidebar(role: str, name: str) -> str:
 def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
-            "Profile", "Materials", "Results", "Leaderboard", "Quiz",
+            "Profile", "Materials", "Results", "Leaderboard 1",
+            "Leaderboard 2", "Quiz",
             "XP: Journey", "XP: SOP", "XP: Request",
         ],
         "Admin": [
@@ -2778,7 +2780,7 @@ def my_xp_page() -> None:
         )
 
 
-def student_leaderboard_page() -> None:
+def _legacy_student_leaderboard_combined_page() -> None:
     heading("", "Leaderboard")
     user = current_user()
     current_matric = str(user.get("no_matrik") or "")
@@ -3151,6 +3153,289 @@ def student_leaderboard_page() -> None:
                 highlight_current_rows(
                     display, display["XPTEAM"].astype(str) == current_team
                 ),
+                hide_index=True, width="stretch",
+            )
+
+
+def student_leaderboard_context() -> dict[str, Any]:
+    user = current_user()
+    current_matric = str(user.get("no_matrik") or "")
+    individuals, _, months, default_month = leaderboard_data()
+    merged, _ = merged_students()
+    excluded = {
+        "UPS 1", "UPS 2", "UPS 3",
+        "INDIVIDUAL ASSIGNMENT", "GROUP ASSIGNMENT",
+    }
+    assessments = [
+        column for column in ASSESSMENT_COLUMNS
+        if column in merged.columns and column not in excluded
+    ]
+    own = individuals[
+        individuals["NO MATRIK"].astype(str) == current_matric
+    ] if not individuals.empty else pd.DataFrame()
+    current_class = str(own.iloc[0]["Class"]) if not own.empty else ""
+    current_team = str(own.iloc[0]["XPTEAM"]) if not own.empty else ""
+    class_options = (
+        sorted(individuals["Class"].dropna().astype(str).unique().tolist())
+        if not individuals.empty and "Class" in individuals.columns else []
+    )
+    earned, live = fetch_table("student_badges", pd.DataFrame())
+    badge_columns = [
+        f"{family} {badge.upper()}"
+        for family in ("XP", "STREAK")
+        for _, badge in (
+            BADGE_LEVELS if family == "XP" else STREAK_BADGE_LEVELS
+        )
+    ]
+    matrix = pd.DataFrame({"Class": class_options})
+    history = pd.DataFrame()
+    if (
+        live and not earned.empty
+        and {"NO MATRIK", "badge_name"}.issubset(earned.columns)
+        and not individuals.empty
+    ):
+        identities = individuals[[
+            "NO MATRIK", "Student", "Class"
+        ]].drop_duplicates().copy()
+        identities["NO MATRIK"] = identities["NO MATRIK"].astype(str)
+        history = earned.copy()
+        history["NO MATRIK"] = history["NO MATRIK"].astype(str)
+        history = history.merge(identities, on="NO MATRIK", how="left")
+        family = (
+            history["badge_family"].fillna("xp").astype(str).str.upper()
+            if "badge_family" in history.columns
+            else pd.Series("XP", index=history.index)
+        )
+        history["Badge"] = (
+            family + " " + history["badge_name"].astype(str).str.upper()
+        )
+        counts = history.pivot_table(
+            index="Class", columns="Badge", values="NO MATRIK",
+            aggfunc="nunique", fill_value=0,
+        ).reset_index()
+        matrix = matrix.merge(counts, on="Class", how="left")
+    for column in badge_columns:
+        if column not in matrix.columns:
+            matrix[column] = 0
+    if not matrix.empty:
+        matrix[badge_columns] = matrix[badge_columns].fillna(0).astype(int)
+    return {
+        "individuals": individuals,
+        "months": months,
+        "default_month": default_month,
+        "assessments": assessments,
+        "current_matric": current_matric,
+        "current_class": current_class,
+        "current_team": current_team,
+        "class_options": class_options,
+        "badge_history": history,
+        "badge_matrix": matrix[["Class", *badge_columns]],
+    }
+
+
+def student_leaderboard_one_page() -> None:
+    heading("", "Leaderboard 1")
+    ctx = student_leaderboard_context()
+    test_tab, xp_tab, streak_tab, badge_tab, team_tab = st.tabs([
+        "TEST", "XP", "STREAK", "BADGE", "XP (TEAM)",
+    ])
+    with test_tab:
+        selected_class = st.selectbox(
+            "Class", ["ALL", *ctx["class_options"]],
+            key="student_leaderboard_test_individual_class",
+        )
+        assessment = st.selectbox(
+            "Test", ctx["assessments"],
+            key="student_leaderboard_test_individual",
+        ) if ctx["assessments"] else None
+        rows, _ = progress_standings(assessment) if assessment else (
+            pd.DataFrame(), pd.DataFrame()
+        )
+        if selected_class != "ALL" and not rows.empty:
+            rows = rows[rows["Class"].astype(str) == selected_class]
+        if rows.empty:
+            st.info("Individual test leaderboard is not available.")
+        else:
+            display = rows[["NO MATRIK", "Rank", "Student", "Class", "Mark"]]
+            mask = display["NO MATRIK"].astype(str) == ctx["current_matric"]
+            st.dataframe(
+                highlight_current_rows(display.drop(columns=["NO MATRIK"]), mask),
+                hide_index=True, width="stretch",
+            )
+    with xp_tab:
+        selected_class = st.selectbox(
+            "Class", ["ALL", *ctx["class_options"]],
+            key="student_leaderboard_xp_individual_class",
+        )
+        month = st.selectbox(
+            "XP month", ctx["months"],
+            index=ctx["months"].index(ctx["default_month"]),
+            key="student_leaderboard_xp_individual_month",
+        )
+        rows, _, _, _ = leaderboard_data(month)
+        if selected_class != "ALL" and not rows.empty:
+            rows = rows[rows["Class"].astype(str) == selected_class]
+        if rows.empty:
+            st.info("Individual XP leaderboard is not available.")
+        else:
+            display = rows[[
+                "NO MATRIK", "Monthly Rank", "Overall Rank", "Student", "Class",
+                "Monthly XP", "Overall XP", "Badge",
+            ]].sort_values(["Monthly Rank", "Overall Rank", "Student"])
+            mask = display["NO MATRIK"].astype(str) == ctx["current_matric"]
+            st.dataframe(
+                highlight_current_rows(display.drop(columns=["NO MATRIK"]), mask),
+                hide_index=True, width="stretch",
+            )
+    with streak_tab:
+        selected_class = st.selectbox(
+            "Class", ["ALL", *ctx["class_options"]],
+            key="student_leaderboard_streak_class",
+        )
+        rows = ctx["individuals"]
+        if selected_class != "ALL" and not rows.empty:
+            rows = rows[rows["Class"].astype(str) == selected_class]
+        if rows.empty:
+            st.info("Individual streak leaderboard is not available.")
+        else:
+            display = rows[[
+                "NO MATRIK", "Student", "Class", "Current Streak", "Streak Badge",
+            ]].copy()
+            display["Rank"] = display["Current Streak"].rank(
+                method="min", ascending=False
+            ).astype(int)
+            display = display[[
+                "NO MATRIK", "Rank", "Student", "Class",
+                "Current Streak", "Streak Badge",
+            ]].sort_values(["Rank", "Student"])
+            mask = display["NO MATRIK"].astype(str) == ctx["current_matric"]
+            st.dataframe(
+                highlight_current_rows(display.drop(columns=["NO MATRIK"]), mask),
+                hide_index=True, width="stretch",
+            )
+    with badge_tab:
+        selected_class = st.selectbox(
+            "Class", ["ALL", *ctx["class_options"]],
+            key="student_leaderboard_badge_class",
+        )
+        rows = ctx["badge_history"]
+        if selected_class != "ALL" and not rows.empty:
+            rows = rows[rows["Class"].astype(str) == selected_class]
+        if rows.empty:
+            st.info("No student badge achievements are recorded.")
+        else:
+            columns = ["NO MATRIK", "Student", "Class", "Badge"]
+            if "earned_at" in rows.columns:
+                columns.append("earned_at")
+            display = rows[columns].copy()
+            if "earned_at" in display.columns:
+                achieved = pd.to_datetime(display["earned_at"], errors="coerce", utc=True)
+                display["Achieved at"] = achieved.dt.tz_convert(
+                    "Asia/Kuala_Lumpur"
+                ).dt.strftime("%Y-%m-%d %H:%M").fillna("—")
+                display["_sort"] = achieved
+                display = display.drop(columns=["earned_at"]).sort_values(
+                    "_sort", ascending=False
+                ).drop(columns=["_sort"])
+            mask = display["NO MATRIK"].astype(str) == ctx["current_matric"]
+            st.dataframe(
+                highlight_current_rows(display.drop(columns=["NO MATRIK"]), mask),
+                hide_index=True, width="stretch",
+            )
+    with team_tab:
+        selected_class = st.selectbox(
+            "Class", ["ALL", *ctx["class_options"]],
+            key="student_leaderboard_xp_team_class",
+        )
+        month = st.selectbox(
+            "XP month", ctx["months"],
+            index=ctx["months"].index(ctx["default_month"]),
+            key="student_leaderboard_xp_team_month",
+        )
+        rows, _, _, _ = leaderboard_data(month)
+        if selected_class != "ALL" and not rows.empty:
+            rows = rows[rows["Class"].astype(str) == selected_class]
+        teams = rows.groupby("XPTEAM", dropna=False).agg(
+            Students=("Student", "count"),
+            **{
+                "Monthly XP Average": ("Monthly XP", "mean"),
+                "Monthly XP Total": ("Monthly XP", "sum"),
+                "Overall XP Average": ("Overall XP", "mean"),
+                "Overall XP Total": ("Overall XP", "sum"),
+            },
+        ).reset_index() if not rows.empty else pd.DataFrame()
+        if teams.empty:
+            st.info("XPTEAM leaderboard is not available.")
+        else:
+            teams["Monthly Rank"] = teams["Monthly XP Average"].rank(
+                method="min", ascending=False
+            ).astype(int)
+            teams["Overall Rank"] = teams["Overall XP Average"].rank(
+                method="min", ascending=False
+            ).astype(int)
+            display = teams.set_index("XPTEAM")[[
+                "Monthly Rank", "Overall Rank", "Students",
+                "Monthly XP Average", "Monthly XP Total",
+                "Overall XP Average", "Overall XP Total",
+            ]].transpose().rename_axis("Metric").reset_index()
+            st.dataframe(
+                highlight_current_class_column(display, ctx["current_team"]),
+                hide_index=True, width="stretch",
+            )
+
+
+def student_leaderboard_two_page() -> None:
+    heading("", "Leaderboard 2")
+    ctx = student_leaderboard_context()
+    test_tab, xp_tab, badge_tab = st.tabs([
+        "TEST (CLASS)", "XP (CLASS)", "BADGE (CLASS)",
+    ])
+    with test_tab:
+        assessment = st.selectbox(
+            "Test", ctx["assessments"],
+            key="student_leaderboard_test_class",
+        ) if ctx["assessments"] else None
+        _, classes = progress_standings(assessment) if assessment else (
+            pd.DataFrame(), pd.DataFrame()
+        )
+        if classes.empty:
+            st.info("Class test leaderboard is not available.")
+        else:
+            display = classes[["Rank", "Class", "Students", "Average mark"]]
+            mask = display["Class"].astype(str) == ctx["current_class"]
+            st.dataframe(
+                highlight_current_rows(display, mask),
+                hide_index=True, width="stretch",
+            )
+    with xp_tab:
+        month = st.selectbox(
+            "XP month", ctx["months"],
+            index=ctx["months"].index(ctx["default_month"]),
+            key="student_leaderboard_xp_class_month",
+        )
+        _, classes, _, _ = leaderboard_data(month)
+        if classes.empty:
+            st.info("Class XP leaderboard is not available.")
+        else:
+            display = classes.set_index("Class")[[
+                "Monthly Rank", "Overall Rank", "Students",
+                "Monthly XP Average", "Monthly XP Total",
+                "Overall XP Average", "Overall XP Total",
+            ]].transpose().rename_axis("Metric").reset_index()
+            st.dataframe(
+                highlight_current_class_column(display, ctx["current_class"]),
+                hide_index=True, width="stretch",
+            )
+    with badge_tab:
+        matrix = ctx["badge_matrix"]
+        if matrix.empty:
+            st.info("Class badge matrix is not available.")
+        else:
+            display = matrix.set_index("Class").transpose().rename_axis(
+                "Badge"
+            ).reset_index()
+            st.dataframe(
+                highlight_current_class_column(display, ctx["current_class"]),
                 hide_index=True, width="stretch",
             )
 
@@ -5981,7 +6266,8 @@ def main() -> None:
             "Quiz": quiz_page,
             "XP: Journey": my_xp_page,
             "XP: SOP": lambda: sop_page("XP: SOP"),
-            "Leaderboard": student_leaderboard_page,
+            "Leaderboard 1": student_leaderboard_one_page,
+            "Leaderboard 2": student_leaderboard_two_page,
             "Profile": profile_page,
             "XP: Request": request_xp_page,
         }[page]()
