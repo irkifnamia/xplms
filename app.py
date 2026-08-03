@@ -10,7 +10,8 @@ import json
 import os
 import random
 import re
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -812,6 +813,96 @@ def valid_password(password: str) -> bool:
     )
 
 
+SESSION_QUERY_KEY = "xplms_session"
+SESSION_LIFETIME_DAYS = 30
+
+
+def user_from_account(account: dict[str, Any]) -> dict[str, Any]:
+    """Convert a database account into the app's session identity."""
+    return {
+        "name": account["full_name"],
+        "email": account.get("email"),
+        "role": (
+            "Admin" if account.get("role") == "lecturer"
+            else str(account.get("role", "student")).title()
+        ),
+        "id": str(account["id"]),
+        "no_matrik": account.get("NO MATRIK"),
+        "must_change_password": account.get("must_change_password", False),
+    }
+
+
+def create_persistent_session(user_id: str) -> None:
+    """Create a revocable bearer token so browser refresh keeps the login."""
+    token = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(ZoneInfo("UTC")) + timedelta(
+        days=SESSION_LIFETIME_DAYS
+    )
+    db().table("app_sessions").insert({
+        "user_id": user_id,
+        "token_hash": token_hash,
+        "expires_at": expires_at.isoformat(),
+    }).execute()
+    st.query_params[SESSION_QUERY_KEY] = token
+
+
+def restore_persistent_session() -> bool:
+    """Restore an active app account from the refresh-safe URL token."""
+    token = str(st.query_params.get(SESSION_QUERY_KEY, "")).strip()
+    if not token or not db():
+        return False
+    try:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        sessions = (
+            db().table("app_sessions")
+            .select("user_id,expires_at,revoked_at")
+            .eq("token_hash", token_hash).limit(1).execute().data
+        )
+        session = sessions[0] if sessions else None
+        expiry = pd.to_datetime(
+            session.get("expires_at") if session else None,
+            errors="coerce", utc=True,
+        )
+        if (
+            not session or session.get("revoked_at")
+            or pd.isna(expiry)
+            or expiry.to_pydatetime() <= datetime.now(ZoneInfo("UTC"))
+        ):
+            st.query_params.pop(SESSION_QUERY_KEY, None)
+            return False
+        accounts = (
+            db().table("app_users")
+            .select('id,email,full_name,role,"NO MATRIK",active,must_change_password')
+            .eq("id", session["user_id"]).eq("active", True)
+            .limit(1).execute().data
+        )
+        if not accounts:
+            st.query_params.pop(SESSION_QUERY_KEY, None)
+            return False
+        st.session_state.user = user_from_account(accounts[0])
+        st.cache_data.clear()
+        return True
+    except Exception:
+        return False
+
+
+def sign_out() -> None:
+    """Revoke the current persistent token and clear local app state."""
+    token = str(st.query_params.get(SESSION_QUERY_KEY, "")).strip()
+    if token and db():
+        try:
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            db().table("app_sessions").update({
+                "revoked_at": datetime.now(ZoneInfo("UTC")).isoformat()
+            }).eq("token_hash", token_hash).execute()
+        except Exception:
+            pass
+    st.query_params.pop(SESSION_QUERY_KEY, None)
+    st.session_state.clear()
+    st.rerun()
+
+
 def is_demo() -> bool:
     """Keep preview sessions completely isolated from Supabase."""
     user = st.session_state.get("user", {})
@@ -1436,8 +1527,7 @@ def sidebar(role: str, name: str) -> str:
         st.divider()
         centered_image(AFJ_LOGO_PATH, 62, "EMPOWERED BY")
         if st.button("Sign out", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
+            sign_out()
     return st.session_state[active_key]
 
 
@@ -1490,8 +1580,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
                 key=f"mobile_sign_out_{role.lower()}",
                 width="content",
             ):
-                st.session_state.clear()
-                st.rerun()
+                sign_out()
             st.selectbox(
                 "PAGE",
                 menus[role],
@@ -1589,14 +1678,11 @@ def login() -> None:
                         )
                     ):
                         raise ValueError("Invalid credentials")
-                    st.session_state.user = {
-                        "name": account["full_name"],
-                        "email": account["email"],
-                        "role": "Admin" if account["role"] == "lecturer" else account["role"].title(),
-                        "id": str(account["id"]),
-                        "no_matrik": account.get("NO MATRIK"),
-                        "must_change_password": account.get("must_change_password", False),
-                    }
+                    st.session_state.user = user_from_account(account)
+                    try:
+                        create_persistent_session(str(account["id"]))
+                    except Exception:
+                        st.session_state.session_migration_required = True
                     client.table("app_users").update(
                         {"last_login_at": datetime.now().isoformat()}
                     ).eq("id", account["id"]).execute()
@@ -1662,6 +1748,17 @@ def student_identity(user: dict[str, Any]) -> tuple[str, str]:
             "—" if pd.isna(student_class) else str(student_class),
         )
     return str(user.get("name", "Student")), "—"
+
+
+def student_xpteam(user: dict[str, Any]) -> str:
+    """Return the student's assigned XP team for page-header context."""
+    matched, _ = fetch_student_row(
+        "stud_background", user.get("no_matrik"), DEMO_STUDENTS
+    )
+    if matched.empty:
+        return "—"
+    value = matched.iloc[0].get("XPTEAM")
+    return "—" if pd.isna(value) or not str(value).strip() else str(value)
 
 
 ASSESSMENT_COLUMNS = [
@@ -2088,7 +2185,10 @@ def profile_page() -> None:
                 ("System", row.get("SISTEM", row.get("programme", "—"))),
                 ("PKA", row.get("PKA", "—")),
             ]
-            hidden = {"id", "created_at", "updated_at"}
+            hidden = {
+                "id", "created_at", "updated_at", "JANTINA", "jantina",
+                "JANTINA PELAJAR", "gender", "GENDER",
+            }
             represented = {
                 "NICKNAME PELAJAR", "NAMA PELAJAR", "name",
                 "NO MATRIK", "student_id", "KELAS", "cohort",
@@ -2714,8 +2814,8 @@ def my_xp_page() -> None:
             if current_streak >= threshold
         }
 
-    history_tab, xp_tab, streak_tab = st.tabs(
-        ["XP HISTORY", "MY XP", "MY STREAK"]
+    history_tab, xp_tab, streak_tab, team_tab = st.tabs(
+        ["XP HISTORY", "MY XP", "MY STREAK", "XPTEAM"]
     )
     with history_tab:
         if history.empty:
@@ -2788,6 +2888,44 @@ def my_xp_page() -> None:
         render_badge_cards(
             "streak", STREAK_BADGE_LEVELS, streak_names, "days"
         )
+    with team_tab:
+        individuals, _, _, _ = leaderboard_data()
+        class_options = (
+            sorted(individuals["Class"].dropna().astype(str).unique())
+            if not individuals.empty else []
+        )
+        own = individuals[
+            individuals["NO MATRIK"].astype(str)
+            == str(user.get("no_matrik") or "")
+        ] if not individuals.empty else pd.DataFrame()
+        own_class = str(own.iloc[0]["Class"]) if not own.empty else "ALL"
+        selected_class = st.selectbox(
+            "Class", ["ALL", *class_options],
+            index=(
+                ["ALL", *class_options].index(own_class)
+                if own_class in class_options else 0
+            ),
+            key="xp_journey_xpteam_class",
+        )
+        members = individuals.copy()
+        if selected_class != "ALL" and not members.empty:
+            members = members[members["Class"].astype(str) == selected_class]
+        if members.empty:
+            st.info("No XPTEAM members are available.")
+        else:
+            display = members[[
+                "XPTEAM", "Student", "Class", "Overall XP",
+            ]].sort_values(["XPTEAM", "Student"])
+            st.dataframe(
+                highlight_current_rows(
+                    display,
+                    members.loc[display.index, "NO MATRIK"].astype(str)
+                    == str(user.get("no_matrik") or ""),
+                ),
+                hide_index=True,
+                width="stretch",
+                height=420,
+            )
 
 
 def _legacy_student_leaderboard_combined_page() -> None:
@@ -3342,7 +3480,7 @@ def student_leaderboard_one_page() -> None:
                 achieved = pd.to_datetime(display["earned_at"], errors="coerce", utc=True)
                 display["Achieved at"] = achieved.dt.tz_convert(
                     "Asia/Kuala_Lumpur"
-                ).dt.strftime("%Y-%m-%d %H:%M").fillna("—")
+                ).dt.strftime("%Y-%m-%d %H:%M:%S").fillna("—")
                 display["_sort"] = achieved
                 display = display.drop(columns=["earned_at"]).sort_values(
                     "_sort", ascending=False
@@ -3383,14 +3521,22 @@ def student_leaderboard_one_page() -> None:
             teams["Overall Rank"] = teams["Overall XP Average"].rank(
                 method="min", ascending=False
             ).astype(int)
-            display = teams.set_index("XPTEAM")[[
-                "Monthly Rank", "Overall Rank", "Students",
-                "Monthly XP Average", "Monthly XP Total",
-                "Overall XP Average", "Overall XP Total",
-            ]].transpose().rename_axis("Metric")
+            display = teams[[
+                "XPTEAM", "Monthly Rank", "Overall Rank",
+                "Monthly XP Average", "Overall XP Average",
+            ]].sort_values(["Monthly Rank", "Overall Rank", "XPTEAM"])
+            display["Monthly XP Average"] = display[
+                "Monthly XP Average"
+            ].round(2)
+            display["Overall XP Average"] = display[
+                "Overall XP Average"
+            ].round(2)
             st.dataframe(
-                highlight_current_class_column(display, ctx["current_team"]),
-                hide_index=False,
+                highlight_current_rows(
+                    display,
+                    display["XPTEAM"].astype(str) == ctx["current_team"],
+                ),
+                hide_index=True,
                 width="stretch",
             )
 
@@ -3428,7 +3574,19 @@ def student_leaderboard_two_page() -> None:
         if classes.empty:
             st.info("Class XP leaderboard is not available.")
         else:
-            display = classes.set_index("Class")[[
+            formatted = classes.copy()
+            for column in ["Monthly Rank", "Overall Rank", "Students"]:
+                formatted[column] = pd.to_numeric(
+                    formatted[column], errors="coerce"
+                ).fillna(0).astype(int).astype(str)
+            for column in [
+                "Monthly XP Average", "Monthly XP Total",
+                "Overall XP Average", "Overall XP Total",
+            ]:
+                formatted[column] = pd.to_numeric(
+                    formatted[column], errors="coerce"
+                ).fillna(0).map(lambda value: f"{value:.2f}")
+            display = formatted.set_index("Class")[[
                 "Monthly Rank", "Overall Rank", "Students",
                 "Monthly XP Average", "Monthly XP Total",
                 "Overall XP Average", "Overall XP Total",
@@ -5012,6 +5170,7 @@ def _legacy_award_xp_page() -> None:
                                 "source_id": f"claim-{claim['id']}",
                                 "reason": claim["title"],
                                 "award_mode": "manual",
+                                "created_at": claim.get("created_at"),
                                 "awarded_by": st.session_state.user["id"],
                             }).execute().data[0]
                             client.table("xp_claims").update({
@@ -5248,6 +5407,7 @@ def award_xp_page() -> None:
                                     "NO MATRIK": claim["NO MATRIK"], "rule_code": rule_code,
                                     "points": points, "source_id": f"claim-{claim['id']}",
                                     "reason": claim["title"], "award_mode": "manual",
+                                    "created_at": claim.get("created_at"),
                                     "awarded_by": st.session_state.user["id"],
                                 }).execute().data[0]
                                 client.table("xp_claims").update({
@@ -5513,11 +5673,7 @@ def analysis_progress_page() -> None:
 
 
 def analysis_xp_page() -> None:
-    heading(
-        "Recognition intelligence",
-        "Analysis XP",
-        "Review XP balances, badges and student rank.",
-    )
+    heading("", "Analysis XP")
     _, _, months, default_month = leaderboard_data()
     selected_month = st.selectbox(
         "Reward month",
@@ -5539,21 +5695,13 @@ def analysis_xp_page() -> None:
             "Students currently active",
         )
 
-    monthly_tab, overall_tab, class_tab = st.tabs(
-        ["Monthly individual", "Overall individual", "Class leaderboard"]
-    )
-    with monthly_tab:
-        monthly = individuals.sort_values(
-            ["Monthly Rank", "Overall Rank", "Student"]
-        )[
-            [
-                "Monthly Rank", "Student", "NO MATRIK", "Class",
-                "Monthly XP", "Overall XP", "Badge",
-                "Current Streak", "Streak Badge",
-            ]
+    individual_tab, class_tab, team_tab, badge_tab = st.tabs(
+        [
+            "INDIVIDUAL LEADERBOARD", "CLASS LEADERBOARD",
+            "XPTEAM LEADERBOARD", "BADGE LEADERBOARD",
         ]
-        st.dataframe(monthly, hide_index=True, width="stretch")
-    with overall_tab:
+    )
+    with individual_tab:
         overall = individuals.sort_values(["Overall Rank", "Student"])[
             [
                 "Overall Rank", "Student", "NO MATRIK", "Class",
@@ -5567,7 +5715,7 @@ def analysis_xp_page() -> None:
         monthly_classes = classes.sort_values(["Monthly Rank", "Class"])[
             [
                 "Monthly Rank", "Class", "Students", "Monthly XP Average",
-                "Monthly XP Total", "Overall XP Average", "Class Badge",
+                "Monthly XP Total", "Overall XP Average",
             ]
         ]
         st.dataframe(monthly_classes, hide_index=True, width="stretch")
@@ -5575,10 +5723,54 @@ def analysis_xp_page() -> None:
         overall_classes = classes.sort_values(["Overall Rank", "Class"])[
             [
                 "Overall Rank", "Class", "Students", "Overall XP Average",
-                "Overall XP Total", "Monthly XP Average", "Class Badge",
+                "Overall XP Total", "Monthly XP Average",
             ]
         ]
         st.dataframe(overall_classes, hide_index=True, width="stretch")
+    with team_tab:
+        teams = individuals.groupby("XPTEAM", dropna=False).agg(
+            Students=("NO MATRIK", "nunique"),
+            **{
+                "Monthly XP Total": ("Monthly XP", "sum"),
+                "Monthly XP Average": ("Monthly XP", "mean"),
+                "Overall XP Total": ("Overall XP", "sum"),
+                "Overall XP Average": ("Overall XP", "mean"),
+            },
+        ).reset_index()
+        teams["Monthly Rank"] = teams["Monthly XP Average"].rank(
+            method="min", ascending=False
+        ).astype(int)
+        teams["Overall Rank"] = teams["Overall XP Average"].rank(
+            method="min", ascending=False
+        ).astype(int)
+        st.subheader(f"Monthly XPTEAM ranking · {selected_month}")
+        st.dataframe(
+            teams.sort_values(["Monthly Rank", "XPTEAM"])[[
+                "Monthly Rank", "XPTEAM", "Students", "Monthly XP Average",
+                "Monthly XP Total", "Overall XP Average",
+            ]],
+            hide_index=True, width="stretch",
+        )
+        st.subheader("Overall XPTEAM ranking")
+        st.dataframe(
+            teams.sort_values(["Overall Rank", "XPTEAM"])[[
+                "Overall Rank", "XPTEAM", "Students", "Overall XP Average",
+                "Overall XP Total", "Monthly XP Average",
+            ]],
+            hide_index=True, width="stretch",
+        )
+    with badge_tab:
+        matrix = student_leaderboard_context()["badge_matrix"]
+        if matrix.empty:
+            st.info("Class badge matrix is not available.")
+        else:
+            st.dataframe(
+                matrix.set_index("Class").transpose().rename_axis(
+                    "Badge"
+                ).reset_index(),
+                hide_index=True,
+                width="stretch",
+            )
 
 
 def admin_crud_page() -> None:
@@ -6270,9 +6462,19 @@ def main() -> None:
             "id": "demo",
         }
     if "user" not in st.session_state:
+        restore_persistent_session()
+    if "user" not in st.session_state:
         login()
         return
     user = st.session_state.user
+    if (
+        st.session_state.get("session_migration_required")
+        and user.get("role") == "Admin"
+    ):
+        st.warning(
+            "Run supabase_migration_019_persistent_sessions_badge_times.sql "
+            "to enable refresh-safe login and accurate badge timestamps."
+        )
     if user.get("must_change_password"):
         st.session_state.header_identity = (
             f"{user.get('name', 'USER')} | {user.get('role', 'USER')}"
@@ -6303,8 +6505,9 @@ def main() -> None:
         else:
             effective_user = user
         display_name, student_class = student_identity(effective_user)
+        xp_team = student_xpteam(effective_user)
         st.session_state.header_identity = (
-            f"{display_name} | {student_class}"
+            f"{display_name} | {student_class} | {xp_team}"
         ).upper()
     else:
         display_name = user["name"]
