@@ -4106,7 +4106,12 @@ def admin_quiz_page() -> None:
         "AI quiz generation",
         "Create, review and publish chapter question banks.",
     )
-    st.subheader("Quiz generation")
+    generation_tab, review_tab, library_tab = st.tabs([
+        "QUIZ GENERATION",
+        "QUESTION BANK REVIEW",
+        "QUIZ LIBRARY",
+    ])
+    generation_tab.__enter__()
     materials, live = fetch_table("materials", EMPTY_MATERIALS)
     required_columns = {"id", "chapter", "file_path", "quiz_source"}
     if live and not required_columns.issubset(materials.columns):
@@ -4114,6 +4119,7 @@ def admin_quiz_page() -> None:
             "Run supabase_migration_014_material_quiz_banks.sql before "
             "generating question banks."
         )
+        generation_tab.__exit__(None, None, None)
         return
     quiz_sources = materials[
         materials.get("quiz_source", pd.Series(False, index=materials.index))
@@ -4244,6 +4250,8 @@ def admin_quiz_page() -> None:
                         )
                     (st.success if ok else st.error)(message)
 
+    generation_tab.__exit__(None, None, None)
+    review_tab.__enter__()
     quizzes, quiz_live = fetch_table("quizzes", pd.DataFrame())
     if (
         quiz_live
@@ -4254,8 +4262,8 @@ def admin_quiz_page() -> None:
             "Run supabase_migration_015_quiz_review_consultation_xp.sql "
             "before reviewing or publishing question banks."
         )
+        review_tab.__exit__(None, None, None)
         return
-    st.subheader("Question bank review")
     review_flash = st.session_state.pop("quiz_review_flash", None)
     if review_flash:
         st.success(review_flash)
@@ -4613,7 +4621,8 @@ def admin_quiz_page() -> None:
                 except Exception as exc:
                     st.error(f"Question bank could not be approved: {exc}")
 
-    st.subheader("Quiz library")
+    review_tab.__exit__(None, None, None)
+    library_tab.__enter__()
     if quiz_live:
         try:
             question_inventory = pd.DataFrame(
@@ -4631,6 +4640,7 @@ def admin_quiz_page() -> None:
     )
     if quizzes.empty:
         st.info("No quizzes created yet.")
+        library_tab.__exit__(None, None, None)
         return
     for _, quiz in quizzes.iterrows():
         with st.container(border=True):
@@ -4693,6 +4703,7 @@ def admin_quiz_page() -> None:
                         st.rerun()
                 except Exception as exc:
                     st.error(f"Question bank could not be published: {exc}")
+    library_tab.__exit__(None, None, None)
 
 
 def render_incorrect_quiz_answers(
