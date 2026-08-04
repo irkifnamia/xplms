@@ -5440,15 +5440,20 @@ def award_xp_page() -> None:
             client = db()
 
             def approve_pending_claim(
-                claim_row: pd.Series, points: int, admin_note: str = ""
-            ) -> None:
+                claim_row: pd.Series,
+                points: int,
+                admin_note: str = "",
+                refresh_page: bool = True,
+            ) -> bool:
                 """Approve one request using its displayed or quick XP value."""
                 if not claims_live:
-                    st.success("Demo request approved.")
-                    return
+                    if refresh_page:
+                        st.success("Demo request approved.")
+                    return True
                 if int(points) == 0:
-                    st.error("XP award cannot be zero.")
-                    return
+                    if refresh_page:
+                        st.error("XP award cannot be zero.")
+                    return False
                 try:
                     claim_rule = str(
                         claim_row.get("claim_type", "study_group")
@@ -5470,13 +5475,24 @@ def award_xp_page() -> None:
                         "reviewed_at": datetime.now().isoformat(),
                         "xp_event_id": event["id"],
                     }).eq("id", claim_row["id"]).execute()
-                    refresh_after_mutation(
-                        "xp_events", "xp_claims", "stud_xp",
-                        "student_badges", "student_activity_days",
-                    )
+                    if refresh_page:
+                        refresh_after_mutation(
+                            "xp_events", "xp_claims", "stud_xp",
+                            "student_badges", "student_activity_days",
+                        )
+                    return True
                 except Exception as exc:
-                    st.error(f"Request approval failed: {exc}")
+                    if refresh_page:
+                        st.error(f"Request approval failed: {exc}")
+                    return False
 
+            batch_notice = st.session_state.pop("xp_batch_notice", None)
+            if batch_notice:
+                notice_type, notice_text = batch_notice
+                (st.success if notice_type == "success" else st.warning)(
+                    notice_text
+                )
+            selected_claims: list[tuple[pd.Series, int]] = []
             for _, claim in claims.iterrows():
                 label = str(claim.get("claim_type", "study_group")).replace("_", " ").title()
                 request_column, quick_column = st.columns(
@@ -5550,14 +5566,73 @@ def award_xp_page() -> None:
                             }).eq("id", claim["id"]).execute()
                             refresh_after_mutation("xp_claims")
                 with quick_column:
-                    if st.button(
-                        "Approve",
-                        type="primary",
-                        key=f"quick_approve_claim_{claim['id']}",
-                        width="stretch",
-                        help=f"Approve immediately for {initial_points} XP.",
+                    selected = st.checkbox(
+                        "Select",
+                        key=f"select_claim_{claim['id']}",
+                        label_visibility="collapsed",
+                        help=(
+                            f"Select this request for a batch action "
+                            f"({int(approval_points)} XP if approved)."
+                        ),
+                    )
+                    if selected:
+                        selected_claims.append((claim, int(approval_points)))
+
+            selected_count = len(selected_claims)
+            st.caption(f"{selected_count} request(s) selected")
+            batch_approve, batch_reject = st.columns(2)
+            if batch_approve.button(
+                "Approve selected",
+                type="primary",
+                disabled=selected_count == 0,
+                width="stretch",
+            ):
+                approved = 0
+                failed = 0
+                for selected_claim, selected_points in selected_claims:
+                    if approve_pending_claim(
+                        selected_claim,
+                        selected_points,
+                        "Batch approved by Admin",
+                        refresh_page=False,
                     ):
-                        approve_pending_claim(claim, initial_points)
+                        approved += 1
+                    else:
+                        failed += 1
+                invalidate_table_cache(
+                    "xp_events", "xp_claims", "stud_xp",
+                    "student_badges", "student_activity_days",
+                )
+                st.session_state.xp_batch_notice = (
+                    "success" if failed == 0 else "warning",
+                    f"{approved} request(s) approved"
+                    + (f"; {failed} failed." if failed else "."),
+                )
+                st.rerun()
+            if batch_reject.button(
+                "Reject selected",
+                disabled=selected_count == 0,
+                width="stretch",
+            ):
+                selected_ids = [
+                    int(selected_claim["id"])
+                    for selected_claim, _ in selected_claims
+                ]
+                try:
+                    client.table("xp_claims").update({
+                        "status": "rejected",
+                        "admin_note": "Batch rejected by Admin",
+                        "reviewed_by": st.session_state.user["id"],
+                        "reviewed_at": datetime.now().isoformat(),
+                    }).in_("id", selected_ids).execute()
+                    invalidate_table_cache("xp_claims")
+                    st.session_state.xp_batch_notice = (
+                        "success",
+                        f"{selected_count} request(s) rejected.",
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Selected requests could not be rejected: {exc}")
     with records_tab:
         if events.empty or "id" not in events.columns:
             st.info("No XP records are available.")
