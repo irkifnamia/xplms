@@ -4100,14 +4100,161 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                         st.rerun()
 
 
+def render_published_question_review(
+    quizzes: pd.DataFrame,
+    quiz_live: bool,
+) -> None:
+    """Search and edit questions that are already published."""
+    published = (
+        quizzes[quizzes["status"] == "published"].copy()
+        if not quizzes.empty and "status" in quizzes.columns
+        else pd.DataFrame()
+    )
+    if published.empty:
+        st.info("No published question bank is available.")
+        return
+    if not quiz_live:
+        st.info("Published question review is read-only in demo mode.")
+        return
+    bank_labels = {
+        int(row["id"]): (
+            f"C{row.get('chapter', '—')} · {row.get('title', 'Question bank')}"
+        )
+        for _, row in published.iterrows()
+    }
+    quiz_id = st.selectbox(
+        "Published question bank",
+        list(bank_labels),
+        format_func=lambda value: bank_labels[value],
+        key="published_review_bank",
+    )
+    try:
+        rows = db().table("quiz_questions").select("*").eq(
+            "quiz_id", quiz_id
+        ).order("position").execute().data
+        questions = pd.DataFrame(rows)
+    except Exception as exc:
+        st.error(f"Published questions could not be loaded: {exc}")
+        return
+    if questions.empty:
+        st.info("This published bank contains no questions.")
+        return
+
+    keyword = st.text_input(
+        "Search published questions",
+        placeholder="Search question, option, explanation or difficulty…",
+        key=f"published_question_search_{quiz_id}",
+    ).strip().lower()
+    matches = questions
+    if keyword:
+        searchable = questions.apply(
+            lambda row: " ".join(
+                str(row.get(column, ""))
+                for column in (
+                    "position", "difficulty", "question", "options", "explanation"
+                )
+            ).lower(),
+            axis=1,
+        )
+        matches = questions[searchable.str.contains(keyword, regex=False)]
+    if matches.empty:
+        st.info("No published question matches that keyword.")
+        return
+
+    display_columns = [
+        column for column in (
+            "position", "difficulty", "question", "options",
+            "correct_index", "explanation", "review_status",
+        ) if column in matches.columns
+    ]
+    st.dataframe(
+        matches[display_columns], hide_index=True, width="stretch", height=360
+    )
+    labels = {
+        int(row["id"]): (
+            f"Q{int(row.get('position', 0))} · "
+            f"{str(row.get('difficulty', '')).upper()} · "
+            f"{str(row.get('question', ''))[:90]}"
+        )
+        for _, row in matches.iterrows()
+    }
+    question_id = st.selectbox(
+        "Published question to inspect or edit",
+        list(labels),
+        format_func=lambda value: labels[value],
+        key=f"published_question_{quiz_id}",
+    )
+    selected = questions[
+        questions["id"].astype(int) == int(question_id)
+    ].iloc[0]
+    options = selected.get("options", [])
+    if isinstance(options, str):
+        options = json.loads(options)
+    options = list(options)
+    while len(options) < 4:
+        options.append("")
+
+    st.markdown("**Rendered mathematical preview**")
+    st.markdown(str(selected["question"]))
+    for index, option in enumerate(options):
+        st.markdown(f"**{('A', 'B', 'C', 'D')[index]}.** {option}")
+    with st.form(f"published_question_form_{question_id}"):
+        edited_question = st.text_area("Question", value=str(selected["question"]))
+        edited_options = [
+            st.text_input(f"Option {letter}", value=str(options[index]))
+            for index, letter in enumerate(("A", "B", "C", "D"))
+        ]
+        edited_correct = st.selectbox(
+            "Correct answer",
+            range(4),
+            index=int(selected["correct_index"]),
+            format_func=lambda value: ("A", "B", "C", "D")[value],
+        )
+        edited_explanation = st.text_area(
+            "Explanation", value=str(selected["explanation"])
+        )
+        confirmed = st.checkbox(
+            "I confirm this published question edit is correct.", value=False
+        )
+        save = st.form_submit_button("Save published question", type="primary")
+        if save:
+            if not confirmed:
+                st.error("Confirm the published question edit before saving.")
+            elif (
+                not edited_question.strip()
+                or not edited_explanation.strip()
+                or any(not option.strip() for option in edited_options)
+            ):
+                st.error("Complete the question, all options and explanation.")
+            elif len({option.strip() for option in edited_options}) != 4:
+                st.error("All four answer options must be different.")
+            else:
+                try:
+                    db().table("quiz_questions").update({
+                        "question": edited_question.strip(),
+                        "options": [option.strip() for option in edited_options],
+                        "correct_index": int(edited_correct),
+                        "explanation": edited_explanation.strip(),
+                        "review_status": "approved",
+                        "reviewed_at": datetime.now().isoformat(),
+                        "reviewed_by": st.session_state.user["id"],
+                    }).eq("id", question_id).execute()
+                    invalidate_table_cache("quiz_questions", "quizzes")
+                    st.success("Published question updated successfully.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Published question could not be saved: {exc}")
+
+
 def admin_quiz_page() -> None:
     heading(
         "Assessment builder",
         "AI quiz generation",
         "Create, review and publish chapter question banks.",
     )
-    generation_tab, review_tab, library_tab = st.tabs([
+    generation_tab, draft_review_tab, published_review_tab, library_tab = st.tabs([
         "QUIZ GENERATION",
+        "QUESTION DRAFT REVIEW",
         "QUESTION BANK REVIEW",
         "QUIZ LIBRARY",
     ])
@@ -4197,13 +4344,13 @@ def admin_quiz_page() -> None:
             st.markdown("**Questions to generate and add**")
             easy_column, medium_column, hard_column = st.columns(3)
             easy_count = easy_column.number_input(
-                "Easy", min_value=0, max_value=500, value=40, step=1
+                "Easy", min_value=0, max_value=500, value=0, step=1
             )
             medium_count = medium_column.number_input(
-                "Medium", min_value=0, max_value=500, value=100, step=1
+                "Medium", min_value=0, max_value=500, value=0, step=1
             )
             hard_count = hard_column.number_input(
-                "Hard", min_value=0, max_value=500, value=60, step=1
+                "Hard", min_value=0, max_value=500, value=0, step=1
             )
             requested_counts = {
                 "easy": int(easy_count),
@@ -4217,11 +4364,7 @@ def admin_quiz_page() -> None:
                 "Discard mode is selected."
             )
             generate = st.form_submit_button(
-                (
-                    "Discard draft and generate new LaTeX bank"
-                    if discard_existing
-                    else f"Generate and add {requested_total} question(s)"
-                ),
+                "Generate and add",
                 type="primary",
                 disabled=(
                     not bool(openai_api_key()) or requested_total == 0
@@ -4251,7 +4394,7 @@ def admin_quiz_page() -> None:
                     (st.success if ok else st.error)(message)
 
     generation_tab.__exit__(None, None, None)
-    review_tab.__enter__()
+    draft_review_tab.__enter__()
     quizzes, quiz_live = fetch_table("quizzes", pd.DataFrame())
     if (
         quiz_live
@@ -4262,18 +4405,18 @@ def admin_quiz_page() -> None:
             "Run supabase_migration_015_quiz_review_consultation_xp.sql "
             "before reviewing or publishing question banks."
         )
-        review_tab.__exit__(None, None, None)
+        draft_review_tab.__exit__(None, None, None)
         return
     review_flash = st.session_state.pop("quiz_review_flash", None)
     if review_flash:
         st.success(review_flash)
     editable_banks = (
-        quizzes[quizzes["status"].isin(["draft", "published"])].copy()
+        quizzes[quizzes["status"] == "draft"].copy()
         if not quizzes.empty and "status" in quizzes.columns
         else pd.DataFrame()
     )
     if editable_banks.empty:
-        st.info("No draft or published question bank is available to review.")
+        st.info("No draft question bank is available to review.")
     elif not quiz_live:
         st.info("Question review is read-only in demo mode.")
     else:
@@ -4293,13 +4436,7 @@ def admin_quiz_page() -> None:
         selected_bank = editable_banks[
             editable_banks["id"].astype(int) == int(review_quiz_id)
         ].iloc[0]
-        bank_is_published = str(selected_bank.get("status")) == "published"
-        if bank_is_published:
-            st.info(
-                "This bank is published. Saved edits apply to future and "
-                "unsubmitted quiz sets. Completed attempts, scores and XP "
-                "are not recalculated."
-            )
+        bank_is_published = False
         try:
             review_rows = db().table("quiz_questions").select("*").eq(
                 "quiz_id", review_quiz_id
@@ -4339,11 +4476,34 @@ def admin_quiz_page() -> None:
                 default="all",
                 format_func=str.upper,
             )
+            review_keyword = st.text_input(
+                "Search draft questions",
+                placeholder=(
+                    "Search question, option, explanation or difficulty…"
+                ),
+                key=f"draft_question_search_{review_quiz_id}",
+            ).strip().lower()
             shown_review = review_frame
             if difficulty_filter != "all":
                 shown_review = review_frame[
                     review_frame["difficulty"] == difficulty_filter
                 ]
+            if review_keyword:
+                searchable = shown_review.apply(
+                    lambda row: " ".join(
+                        str(row.get(column, ""))
+                        for column in (
+                            "position", "difficulty", "question",
+                            "options", "explanation",
+                        )
+                    ).lower(),
+                    axis=1,
+                )
+                shown_review = shown_review[
+                    searchable.str.contains(review_keyword, regex=False)
+                ]
+                if shown_review.empty:
+                    st.info("No draft question matches that keyword.")
             review_columns = [
                 column for column in [
                     "position", "difficulty", "question", "options",
@@ -4365,6 +4525,11 @@ def admin_quiz_page() -> None:
                 )
                 for _, row in review_frame.iterrows()
             }
+            first_match_id = (
+                int(shown_review.iloc[0]["id"])
+                if not shown_review.empty else next(iter(question_labels))
+            )
+            edit_question_index = list(question_labels).index(first_match_id)
             discard_question_ids = st.multiselect(
                 "Questions to discard and replace",
                 list(question_labels),
@@ -4465,7 +4630,12 @@ def admin_quiz_page() -> None:
             edit_question_id = st.selectbox(
                 "Question to inspect or edit",
                 list(question_labels),
+                index=edit_question_index,
                 format_func=lambda value: question_labels[value],
+                key=(
+                    f"draft_edit_question_{review_quiz_id}_"
+                    f"{review_keyword or 'all'}"
+                ),
             )
             selected_question = review_frame[
                 review_frame["id"].astype(int) == int(edit_question_id)
@@ -4621,7 +4791,10 @@ def admin_quiz_page() -> None:
                 except Exception as exc:
                     st.error(f"Question bank could not be approved: {exc}")
 
-    review_tab.__exit__(None, None, None)
+    draft_review_tab.__exit__(None, None, None)
+    published_review_tab.__enter__()
+    render_published_question_review(quizzes, quiz_live)
+    published_review_tab.__exit__(None, None, None)
     library_tab.__enter__()
     if quiz_live:
         try:
