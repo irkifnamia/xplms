@@ -1026,6 +1026,28 @@ def _cached_filtered_rows(
     )
 
 
+def invalidate_table_cache(*table_names: str) -> None:
+    """Invalidate only mutated Supabase tables instead of every app cache."""
+    for table_name in set(table_names):
+        try:
+            _cached_table_rows.clear(table_name)
+        except Exception:
+            _cached_table_rows.clear()
+            break
+    if table_names:
+        try:
+            _cached_filtered_rows.clear()
+            _cached_student_rows.clear()
+        except Exception:
+            pass
+
+
+def refresh_after_mutation(*table_names: str) -> None:
+    """Show a database mutation immediately with a targeted page rerun."""
+    invalidate_table_cache(*table_names)
+    st.rerun()
+
+
 @st.cache_data(ttl=540, show_spinner=False)
 def _cached_material_url(file_path: str) -> str:
     """Reuse signed material URLs instead of signing every file on each rerun."""
@@ -1094,7 +1116,7 @@ def upsert_rows(name: str, frame: pd.DataFrame) -> tuple[bool, str]:
     try:
         clean = frame.where(pd.notna(frame), None).to_dict("records")
         client.table(name).upsert(clean).execute()
-        st.cache_data.clear()
+        invalidate_table_cache(name)
         return True, f"{len(clean)} records saved."
     except Exception as exc:
         return False, f"Could not save records: {exc}"
@@ -3875,8 +3897,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                                     ),
                                     "quiz_source": bool(edited_quiz_source),
                                 }).eq("id", selected_id).execute()
-                                st.success("Material details updated.")
-                                st.rerun()
+                                refresh_after_mutation("materials")
                             except Exception as exc:
                                 st.error(f"Material could not be updated: {exc}")
                 confirm_delete = st.checkbox(
@@ -3898,8 +3919,7 @@ def materials_page(lecturer: bool = False, quiz_tools: bool = False) -> None:
                             ).execute()
                             if file_path:
                                 db().storage.from_("materials").remove([file_path])
-                            st.success("Material and its stored file were deleted.")
-                            st.rerun()
+                            refresh_after_mutation("materials")
                         except Exception as exc:
                             st.error(f"Material could not be deleted: {exc}")
         return
@@ -5354,6 +5374,9 @@ def award_xp_page() -> None:
                                 "award_mode": "manual",
                                 "awarded_by": st.session_state.user["id"],
                             }).execute()
+                            invalidate_table_cache(
+                                "xp_events", "stud_xp", "student_badges"
+                            )
                             st.success(f"{int(points):+d} XP recorded for {labels[matric]}.")
                         except Exception as exc:
                             st.error(f"XP could not be recorded: {exc}")
@@ -5395,13 +5418,17 @@ def award_xp_page() -> None:
                         else:
                             try:
                                 rule_code = str(claim.get("claim_type", "study_group"))
-                                rule = client.table("xp_rules").select("default_points").eq("code", rule_code).limit(1).execute().data
-                                points = (
-                                    int(rule[0]["default_points"])
-                                    if rule else {
-                                        "study_group": 5,
-                                        "extra_practice": 15,
-                                    }.get(rule_code, 20)
+                                points = int(
+                                    rule_lookup.get(rule_code, {}).get(
+                                        "default_points",
+                                        {
+                                            "consultation": 15,
+                                            "class_participation": 10,
+                                            "commitment": 10,
+                                            "study_group": 5,
+                                            "extra_practice": 15,
+                                        }.get(rule_code, 10),
+                                    )
                                 )
                                 event = client.table("xp_events").insert({
                                     "NO MATRIK": claim["NO MATRIK"], "rule_code": rule_code,
@@ -5416,8 +5443,10 @@ def award_xp_page() -> None:
                                     "reviewed_at": datetime.now().isoformat(),
                                     "xp_event_id": event["id"],
                                 }).eq("id", claim["id"]).execute()
-                                st.success(f"Request approved and {points} XP awarded.")
-                                st.rerun()
+                                refresh_after_mutation(
+                                    "xp_events", "xp_claims", "stud_xp",
+                                    "student_badges", "student_activity_days",
+                                )
                             except Exception as exc:
                                 st.error(f"Request approval failed: {exc}")
                     if reject.button("Reject", key=f"tab_reject_{claim['id']}"):
@@ -5429,8 +5458,7 @@ def award_xp_page() -> None:
                                 "reviewed_by": st.session_state.user["id"],
                                 "reviewed_at": datetime.now().isoformat(),
                             }).eq("id", claim["id"]).execute()
-                            st.info("Request rejected.")
-                            st.rerun()
+                            refresh_after_mutation("xp_claims")
     with records_tab:
         if events.empty or "id" not in events.columns:
             st.info("No XP records are available.")
@@ -5477,8 +5505,9 @@ def award_xp_page() -> None:
                                 "points": int(edited_points),
                                 "reason": edited_reason.strip(),
                             }).eq("id", event_id).execute()
-                            st.success("XP record and student balance updated.")
-                            st.rerun()
+                            refresh_after_mutation(
+                                "xp_events", "stud_xp", "student_badges"
+                            )
                         except Exception as exc:
                             st.error(
                                 "XP record could not be updated. Run "
@@ -5499,8 +5528,9 @@ def award_xp_page() -> None:
                 else:
                     try:
                         db().table("xp_events").delete().eq("id", event_id).execute()
-                        st.success("XP record deleted and its points reversed.")
-                        st.rerun()
+                        refresh_after_mutation(
+                            "xp_events", "stud_xp", "student_badges"
+                        )
                     except Exception as exc:
                         st.error(
                             "XP record could not be deleted. Run "
@@ -5805,8 +5835,7 @@ def admin_crud_page() -> None:
                     record = {key: value for key, value in values.items() if value != ""}
                     try:
                         db().table(target).insert(record).execute()
-                        st.success("Record added.")
-                        st.rerun()
+                        refresh_after_mutation(target)
                     except Exception as exc:
                         st.error(f"Record could not be added: {exc}")
     with update_tab:
@@ -5900,8 +5929,7 @@ def admin_crud_page() -> None:
             if st.button("Delete record", disabled=not confirmed):
                 try:
                     db().table(target).delete().eq(key, selected).execute()
-                    st.success("Record deleted.")
-                    st.rerun()
+                    refresh_after_mutation(target)
                 except Exception as exc:
                     st.error(f"Record could not be deleted: {exc}")
     with bulk_tab:
