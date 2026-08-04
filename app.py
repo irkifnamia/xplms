@@ -4225,27 +4225,39 @@ def admin_quiz_page() -> None:
     review_flash = st.session_state.pop("quiz_review_flash", None)
     if review_flash:
         st.success(review_flash)
-    drafts = (
-        quizzes[quizzes["status"] == "draft"].copy()
+    editable_banks = (
+        quizzes[quizzes["status"].isin(["draft", "published"])].copy()
         if not quizzes.empty and "status" in quizzes.columns
         else pd.DataFrame()
     )
-    if drafts.empty:
-        st.info("No draft question bank is awaiting review.")
+    if editable_banks.empty:
+        st.info("No draft or published question bank is available to review.")
     elif not quiz_live:
         st.info("Question review is read-only in demo mode.")
     else:
-        draft_labels = {
+        bank_labels = {
             int(row["id"]): (
-                f"C{row.get('chapter', '—')} · {row.get('title', 'Draft bank')}"
+                f"C{row.get('chapter', '—')} · "
+                f"{row.get('title', 'Question bank')} · "
+                f"{str(row.get('status', 'draft')).upper()}"
             )
-            for _, row in drafts.iterrows()
+            for _, row in editable_banks.iterrows()
         }
         review_quiz_id = st.selectbox(
-            "Draft bank to review",
-            list(draft_labels),
-            format_func=lambda value: draft_labels[value],
+            "Question bank to review or edit",
+            list(bank_labels),
+            format_func=lambda value: bank_labels[value],
         )
+        selected_bank = editable_banks[
+            editable_banks["id"].astype(int) == int(review_quiz_id)
+        ].iloc[0]
+        bank_is_published = str(selected_bank.get("status")) == "published"
+        if bank_is_published:
+            st.info(
+                "This bank is published. Saved edits apply to future and "
+                "unsubmitted quiz sets. Completed attempts, scores and XP "
+                "are not recalculated."
+            )
         try:
             review_rows = db().table("quiz_questions").select("*").eq(
                 "quiz_id", review_quiz_id
@@ -4315,14 +4327,16 @@ def admin_quiz_page() -> None:
                 "Questions to discard and replace",
                 list(question_labels),
                 format_func=lambda value: question_labels[value],
+                disabled=bank_is_published,
                 help=(
-                    "Only selected questions are deleted. Their difficulty "
-                    "slots are regenerated from the bank's original materials."
+                    "Available for draft banks only. Selected questions are "
+                    "deleted and regenerated from the original materials."
                 ),
             )
             discard_questions_confirmed = st.checkbox(
                 "I understand the selected questions will be permanently deleted.",
                 value=False,
+                disabled=bank_is_published,
                 key=f"discard_questions_confirm_{review_quiz_id}",
             )
             if st.button(
@@ -4332,14 +4346,14 @@ def admin_quiz_page() -> None:
                 ),
                 type="primary",
                 disabled=(
+                    bank_is_published
+                    or
                     not discard_question_ids
                     or not discard_questions_confirmed
                 ),
                 key=f"discard_questions_{review_quiz_id}",
             ):
-                draft_row = drafts[
-                    drafts["id"].astype(int) == int(review_quiz_id)
-                ].iloc[0]
+                draft_row = selected_bank
                 source_ids = {
                     int(value)
                     for value in (
@@ -4446,11 +4460,23 @@ def admin_quiz_page() -> None:
                     "Explanation",
                     value=str(selected_question["explanation"]),
                 )
+                published_edit_confirmed = True
+                if bank_is_published:
+                    published_edit_confirmed = st.checkbox(
+                        "I confirm this published question edit is correct.",
+                        value=False,
+                    )
                 if st.form_submit_button(
-                    "Save and approve this question",
+                    (
+                        "Save published question"
+                        if bank_is_published
+                        else "Save and approve this question"
+                    ),
                     type="primary",
                 ):
-                    if (
+                    if not published_edit_confirmed:
+                        st.error("Confirm the published question edit before saving.")
+                    elif (
                         not edited_question.strip()
                         or not edited_explanation.strip()
                         or any(not option.strip() for option in edited_options)
@@ -4471,6 +4497,7 @@ def admin_quiz_page() -> None:
                                 "reviewed_at": datetime.now().isoformat(),
                                 "reviewed_by": st.session_state.user["id"],
                             }).eq("id", edit_question_id).execute()
+                            invalidate_table_cache("quiz_questions", "quizzes")
                             approved_response = (
                                 db().table("quiz_questions")
                                 .select("id", count="exact")
@@ -4512,12 +4539,17 @@ def admin_quiz_page() -> None:
             distribution_valid = counts == QUIZ_BANK_DISTRIBUTION
             reviewed_confirm = st.checkbox(
                 "I have reviewed all questions, answers and explanations.",
+                disabled=bank_is_published,
                 key=f"approve_bank_confirm_{review_quiz_id}",
             )
             if st.button(
                 "Approve complete question bank",
                 type="primary",
-                disabled=not reviewed_confirm or not distribution_valid,
+                disabled=(
+                    bank_is_published
+                    or not reviewed_confirm
+                    or not distribution_valid
+                ),
                 key=f"approve_bank_{review_quiz_id}",
             ):
                 try:
