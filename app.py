@@ -5495,8 +5495,8 @@ def award_xp_page() -> None:
             selected_claims: list[tuple[pd.Series, int]] = []
             for _, claim in claims.iterrows():
                 label = str(claim.get("claim_type", "study_group")).replace("_", " ").title()
-                request_column, quick_column = st.columns(
-                    [9, 1.25], vertical_alignment="center"
+                select_column, request_column = st.columns(
+                    [0.45, 9.8], vertical_alignment="center"
                 )
                 with request_column.expander(
                     f"{label} · {claim.get('title', 'XP request')} · "
@@ -5565,7 +5565,7 @@ def award_xp_page() -> None:
                                 "reviewed_at": datetime.now().isoformat(),
                             }).eq("id", claim["id"]).execute()
                             refresh_after_mutation("xp_claims")
-                with quick_column:
+                with select_column:
                     selected = st.checkbox(
                         "Select",
                         key=f"select_claim_{claim['id']}",
