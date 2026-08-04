@@ -2275,6 +2275,7 @@ XP_REQUEST_TYPES = [
     "commitment",
     "study_group",
     "extra_practice",
+    "quiz_correction",
 ]
 XP_DAILY_REQUEST_QUOTAS = {
     "study_group": 2,
@@ -2534,18 +2535,32 @@ def request_xp_page() -> None:
 
     request_tab, list_tab = st.tabs(["REQUEST XP", "MY XP REQUEST"])
     with request_tab:
+        claim_type = st.selectbox(
+            "XP type",
+            XP_REQUEST_TYPES,
+            format_func=lambda value: value.replace("_", " ").title(),
+            key="student_xp_request_type",
+        )
         with st.form("student_xp_request", clear_on_submit=True):
-            claim_type = st.selectbox(
-                "XP type",
-                XP_REQUEST_TYPES,
-                format_func=lambda value: value.replace("_", " ").title(),
-            )
             quota = XP_DAILY_REQUEST_QUOTAS.get(claim_type)
             if quota:
                 used = xp_requests_today(claims, claim_type)
                 st.caption(f"Daily quota: {used}/{quota} requests used today.")
             title = st.text_input("Request title")
             description = st.text_area("Describe the activity")
+            requested_points = None
+            if claim_type == "quiz_correction":
+                requested_points = st.number_input(
+                    "Requested XP",
+                    min_value=1,
+                    max_value=1000,
+                    value=1,
+                    step=1,
+                    help=(
+                        "Propose the XP value for this correction. Admin may "
+                        "change it during review."
+                    ),
+                )
             proof = st.file_uploader(
                 "Proof image (optional)", type=["jpg", "jpeg", "png", "webp"]
             )
@@ -2580,6 +2595,10 @@ def request_xp_page() -> None:
                             "claim_type": claim_type,
                             "title": title.strip(),
                             "description": description.strip(),
+                            "requested_points": (
+                                int(requested_points)
+                                if claim_type == "quiz_correction" else None
+                            ),
                             "proof_path": path,
                             "status": "pending",
                         }).execute()
@@ -2592,7 +2611,10 @@ def request_xp_page() -> None:
         else:
             visible = [
                 column for column in
-                ["created_at", "claim_type", "title", "status", "admin_note"]
+                [
+                    "created_at", "claim_type", "title", "requested_points",
+                    "status", "admin_note",
+                ]
                 if column in claims.columns
             ]
             st.dataframe(
@@ -2632,6 +2654,12 @@ def render_xp_streak_sop() -> None:
             "Method": "Student request → Admin approval",
             "Points": "15 XP default",
             "Daily request quota": "2 per day",
+        },
+        {
+            "XP event": "Quiz correction",
+            "Method": "Admin manual award / Student request → Admin approval",
+            "Points": "No default; student proposes and Admin confirms",
+            "Daily request quota": "—",
         },
         {
             "XP event": "Completed in-app quiz set",
@@ -5219,8 +5247,8 @@ def _legacy_award_xp_page() -> None:
 
     st.subheader("How XP is awarded")
     st.markdown(
-        "- **Admin awards:** consultation, class participation and commitment.\n"
-        "- **Admin-approved requests:** consultation, class participation, commitment, study group or extra practice.\n"
+        "- **Admin awards:** consultation, class participation, commitment and quiz correction.\n"
+        "- **Admin-approved requests:** consultation, class participation, commitment, study group, extra practice or quiz correction.\n"
         "- **Automatic awards:** daily in-app chapter quizzes."
     )
     if not (students_live and rules_live):
@@ -5234,12 +5262,16 @@ def award_xp_page() -> None:
         {"code": "consultation", "name": "Consultation", "default_points": 15},
         {"code": "class_participation", "name": "Class participation", "default_points": 10},
         {"code": "commitment", "name": "Commitment", "default_points": 10},
+        {"code": "quiz_correction", "name": "Quiz correction", "default_points": None},
     ])
     rules, rules_live = fetch_table("xp_rules", rules_fallback)
     if "award_mode" in rules.columns:
         rules = rules[rules["award_mode"] == "manual"]
     if "code" in rules.columns:
-        rules = rules[rules["code"].isin(["consultation", "class_participation", "commitment"])]
+        rules = rules[rules["code"].isin([
+            "consultation", "class_participation", "commitment",
+            "quiz_correction",
+        ])]
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
 
@@ -5343,32 +5375,44 @@ def award_xp_page() -> None:
         if not labels or not rule_lookup:
             st.info("Student profiles and active manual XP rules are required.")
         else:
+            rule_code = st.selectbox(
+                "Award category",
+                list(rule_lookup),
+                format_func=lambda value: str(
+                    rule_lookup[value].get("name", value)
+                ),
+                key="manual_xp_rule_code",
+            )
             with st.form("manual_xp_award_tabs", clear_on_submit=True):
                 matric = st.selectbox("Student", list(labels), format_func=lambda value: labels[value])
-                rule_code = st.selectbox(
-                    "Award category", list(rule_lookup),
-                    format_func=lambda value: str(rule_lookup[value].get("name", value)),
-                )
-                default_points = int(rule_lookup[rule_code].get("default_points", 10))
-                points = st.number_input(
-                    "XP points", min_value=-1000, max_value=1000,
-                    value=default_points, step=1,
-                )
+                configured_default = rule_lookup[rule_code].get("default_points")
+                if rule_code == "quiz_correction" or pd.isna(configured_default):
+                    points_text = st.text_input(
+                        "XP points",
+                        help="Quiz correction has no default. Enter the XP value.",
+                    )
+                    points = pd.to_numeric(points_text, errors="coerce")
+                else:
+                    points = st.number_input(
+                        "XP points", min_value=-1000, max_value=1000,
+                        value=int(configured_default), step=1,
+                    )
                 reason = st.text_area("Reason")
                 confirmed = st.checkbox("I confirm this XP entry is accurate.")
                 if st.form_submit_button("Record XP", type="primary", disabled=not confirmed):
-                    if int(points) == 0:
-                        st.error("XP points cannot be zero.")
+                    numeric_points = pd.to_numeric(points, errors="coerce")
+                    if pd.isna(numeric_points) or int(numeric_points) == 0:
+                        st.error("Enter a non-zero XP value.")
                     elif not reason.strip():
                         st.error("Add a reason for this XP entry.")
                     elif is_demo():
-                        st.success(f"Demo XP entry recorded: {int(points):+d} XP.")
+                        st.success(f"Demo XP entry recorded: {int(numeric_points):+d} XP.")
                     else:
                         try:
                             db().table("xp_events").insert({
                                 "NO MATRIK": matric,
                                 "rule_code": rule_code,
-                                "points": int(points),
+                                "points": int(numeric_points),
                                 "source_id": f"manual-{datetime.now().timestamp()}",
                                 "reason": reason.strip(),
                                 "award_mode": "manual",
@@ -5377,7 +5421,7 @@ def award_xp_page() -> None:
                             invalidate_table_cache(
                                 "xp_events", "stud_xp", "student_badges"
                             )
-                            st.success(f"{int(points):+d} XP recorded for {labels[matric]}.")
+                            st.success(f"{int(numeric_points):+d} XP recorded for {labels[matric]}.")
                         except Exception as exc:
                             st.error(f"XP could not be recorded: {exc}")
 
@@ -5410,6 +5454,45 @@ def award_xp_page() -> None:
                                 st.image(url, caption="Submitted proof", width=420)
                         except Exception:
                             st.warning("The optional proof image could not be displayed.")
+                    rule_code = str(claim.get("claim_type", "study_group"))
+                    configured_points = rule_lookup.get(rule_code, {}).get(
+                        "default_points"
+                    )
+                    proposed_points = pd.to_numeric(
+                        claim.get("requested_points"), errors="coerce"
+                    )
+                    fallback_points = {
+                        "consultation": 15,
+                        "class_participation": 10,
+                        "commitment": 10,
+                        "study_group": 5,
+                        "extra_practice": 15,
+                    }.get(rule_code, 1)
+                    initial_points = (
+                        int(proposed_points)
+                        if pd.notna(proposed_points)
+                        else (
+                            int(configured_points)
+                            if pd.notna(configured_points)
+                            else fallback_points
+                        )
+                    )
+                    if pd.notna(proposed_points):
+                        st.caption(
+                            f"Student proposed: {int(proposed_points)} XP"
+                        )
+                    approval_points = st.number_input(
+                        "XP to award",
+                        min_value=-1000,
+                        max_value=1000,
+                        value=initial_points,
+                        step=1,
+                        key=f"tab_claim_points_{claim['id']}",
+                        help=(
+                            "Keep this value to use the default/proposed XP, "
+                            "or change it before approval."
+                        ),
+                    )
                     note = st.text_input("Admin note", key=f"tab_claim_note_{claim['id']}")
                     approve, reject = st.columns(2)
                     if approve.button("Approve", type="primary", key=f"tab_approve_{claim['id']}"):
@@ -5417,19 +5500,9 @@ def award_xp_page() -> None:
                             st.success("Demo request approved.")
                         else:
                             try:
-                                rule_code = str(claim.get("claim_type", "study_group"))
-                                points = int(
-                                    rule_lookup.get(rule_code, {}).get(
-                                        "default_points",
-                                        {
-                                            "consultation": 15,
-                                            "class_participation": 10,
-                                            "commitment": 10,
-                                            "study_group": 5,
-                                            "extra_practice": 15,
-                                        }.get(rule_code, 10),
-                                    )
-                                )
+                                points = int(approval_points)
+                                if points == 0:
+                                    raise ValueError("XP award cannot be zero.")
                                 event = client.table("xp_events").insert({
                                     "NO MATRIK": claim["NO MATRIK"], "rule_code": rule_code,
                                     "points": points, "source_id": f"claim-{claim['id']}",
