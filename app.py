@@ -1173,6 +1173,7 @@ def generate_chapter_quiz_bank(
     materials: pd.DataFrame,
     chapter: int,
     discard_existing: bool = False,
+    question_counts: dict[str, int] | None = None,
 ) -> tuple[bool, str]:
     api_key = openai_api_key()
     if not api_key or OpenAI is None:
@@ -1209,6 +1210,15 @@ def generate_chapter_quiz_bank(
             or os.getenv("OPENAI_QUIZ_MODEL", "")
             or "gpt-5.6-luna"
         )
+        requested_counts = {
+            difficulty: max(0, int(count))
+            for difficulty, count in (
+                question_counts or QUIZ_BANK_DISTRIBUTION
+            ).items()
+            if difficulty in QUIZ_BANK_DISTRIBUTION
+        }
+        if not any(requested_counts.values()):
+            return False, "Enter at least one question to generate."
         material_ids = materials["id"].astype(int).tolist()
         draft_rows = (
             client.table("quizzes")
@@ -1227,16 +1237,13 @@ def generate_chapter_quiz_bank(
                         "id", draft["id"]
                     ).execute()
             draft_rows = []
-        quiz_row = None
-        for draft in draft_rows:
-            saved_source_ids = {
-                int(value) for value in (draft.get("source_material_ids") or [])
-            }
-            if saved_source_ids == set(material_ids) and not draft.get(
-                "reviewed_at"
-            ):
-                quiz_row = draft
-                break
+        quiz_row = next(
+            (
+                draft for draft in draft_rows
+                if not draft.get("reviewed_at")
+            ),
+            None,
+        )
         if quiz_row is None:
             quiz_row = client.table("quizzes").insert({
                 "material_id": material_ids[0],
@@ -1249,7 +1256,7 @@ def generate_chapter_quiz_bank(
                 "xp_reward": 1,
                 "passing_score": 60,
                 "status": "draft",
-                "target_question_count": 200,
+                "target_question_count": sum(requested_counts.values()),
                 "generated_by_ai": True,
                 "created_by": st.session_state.user["id"],
             }).execute().data[0]
@@ -1268,22 +1275,14 @@ def generate_chapter_quiz_bank(
             .strip()
             for row in existing_rows
         }
-        existing_by_difficulty = {
-            difficulty: sum(
-                str(row.get("difficulty", "")).lower() == difficulty
-                for row in existing_rows
-            )
-            for difficulty in QUIZ_BANK_DISTRIBUTION
-        }
+        starting_total = len(existing_rows)
         next_position = max(
             [int(row.get("position", 0)) for row in existing_rows],
             default=0,
         ) + 1
 
-        for difficulty, target_count in QUIZ_BANK_DISTRIBUTION.items():
-            remaining = max(
-                0, target_count - existing_by_difficulty[difficulty]
-            )
+        for difficulty, requested_count in requested_counts.items():
+            remaining = requested_count
             stalled_attempts = 0
             while remaining:
                 batch_size = min(20, remaining)
@@ -1354,8 +1353,9 @@ def generate_chapter_quiz_bank(
                         saved_total = len(existing_rows)
                         return (
                             False,
-                            f"Generation paused after saving {saved_total}/200 "
-                            f"questions. OpenAI repeatedly returned duplicate "
+                            f"Generation paused after adding "
+                            f"{saved_total - starting_total} question(s). "
+                            f"OpenAI repeatedly returned duplicate "
                             f"{difficulty} questions. Click Generate again to resume "
                             "without paying to regenerate saved questions.",
                         )
@@ -1383,10 +1383,23 @@ def generate_chapter_quiz_bank(
                 remaining -= len(rows_to_save)
                 stalled_attempts = 0
 
+        final_total = len(existing_rows)
+        client.table("quizzes").update({
+            "target_question_count": final_total,
+            "source_material_ids": material_ids,
+            "material_id": material_ids[0],
+            "reviewed_at": None,
+            "reviewed_by": None,
+        }).eq("id", quiz_id).execute()
+        added_text = ", ".join(
+            f"{count} {difficulty}"
+            for difficulty, count in requested_counts.items()
+            if count
+        )
         return (
             True,
-            f"C{chapter} draft bank completed with 200 saved questions: "
-            "40 easy, 100 medium and 60 hard.",
+            f"Added {sum(requested_counts.values())} question(s) to the C{chapter} "
+            f"draft bank ({added_text}). The bank now contains {final_total} questions.",
         )
     except Exception as exc:
         return (
@@ -4091,8 +4104,9 @@ def admin_quiz_page() -> None:
     heading(
         "Assessment builder",
         "AI quiz generation",
-        "Generate a balanced 200-question bank for each chapter.",
+        "Create, review and publish chapter question banks.",
     )
+    st.subheader("Quiz generation")
     materials, live = fetch_table("materials", EMPTY_MATERIALS)
     required_columns = {"id", "chapter", "file_path", "quiz_source"}
     if live and not required_columns.issubset(materials.columns):
@@ -4174,19 +4188,38 @@ def admin_quiz_page() -> None:
                 )
                 if discard_existing else True
             )
+            st.markdown("**Questions to generate and add**")
+            easy_column, medium_column, hard_column = st.columns(3)
+            easy_count = easy_column.number_input(
+                "Easy", min_value=0, max_value=500, value=40, step=1
+            )
+            medium_count = medium_column.number_input(
+                "Medium", min_value=0, max_value=500, value=100, step=1
+            )
+            hard_count = hard_column.number_input(
+                "Hard", min_value=0, max_value=500, value=60, step=1
+            )
+            requested_counts = {
+                "easy": int(easy_count),
+                "medium": int(medium_count),
+                "hard": int(hard_count),
+            }
+            requested_total = sum(requested_counts.values())
             st.caption(
-                "Exactly 40 easy, 100 medium and 60 hard questions will be "
-                "saved incrementally. If generation stops, run it again to resume "
-                "from the saved count instead of regenerating completed batches."
+                f"{requested_total} new question(s) will be generated and added "
+                "incrementally. Existing saved questions are retained unless "
+                "Discard mode is selected."
             )
             generate = st.form_submit_button(
                 (
                     "Discard draft and generate new LaTeX bank"
                     if discard_existing
-                    else "Generate or resume 200-question bank"
+                    else f"Generate and add {requested_total} question(s)"
                 ),
                 type="primary",
-                disabled=not bool(openai_api_key()),
+                disabled=(
+                    not bool(openai_api_key()) or requested_total == 0
+                ),
             )
             if generate:
                 if discard_existing and not discard_confirmed:
@@ -4207,6 +4240,7 @@ def admin_quiz_page() -> None:
                             selected,
                             int(chapter),
                             discard_existing=discard_existing,
+                            question_counts=requested_counts,
                         )
                     (st.success if ok else st.error)(message)
 
@@ -4401,6 +4435,10 @@ def admin_quiz_page() -> None:
                             ok, message = generate_chapter_quiz_bank(
                                 source_materials,
                                 int(draft_row["chapter"]),
+                                question_counts={
+                                    difficulty: int(count)
+                                    for difficulty, count in discarded_mix.items()
+                                },
                             )
                         if ok:
                             st.success(message)
@@ -4510,14 +4548,14 @@ def admin_quiz_page() -> None:
                                 if approved_response.count is not None
                                 else len(approved_response.data or [])
                             )
-                            if approved_total == 200:
+                            if approved_total == len(review_frame):
                                 completed_at = datetime.now().isoformat()
                                 db().table("quizzes").update({
                                     "reviewed_at": completed_at,
                                     "reviewed_by": st.session_state.user["id"],
                                 }).eq("id", review_quiz_id).execute()
                                 message = (
-                                    "Question saved and approved. All 200 "
+                                    "Question saved and approved. All saved "
                                     "questions are now approved; the bank is "
                                     "ready to publish."
                                 )
@@ -4528,7 +4566,7 @@ def admin_quiz_page() -> None:
                                 }).eq("id", review_quiz_id).execute()
                                 message = (
                                     "Question saved and approved successfully "
-                                    f"({approved_total}/200 approved)."
+                                    f"({approved_total}/{len(review_frame)} approved)."
                                 )
                             st.session_state.quiz_review_flash = message
                             st.rerun()
@@ -4536,7 +4574,10 @@ def admin_quiz_page() -> None:
                             st.error(f"Question could not be saved: {exc}")
 
             counts = review_frame["difficulty"].value_counts().to_dict()
-            distribution_valid = counts == QUIZ_BANK_DISTRIBUTION
+            distribution_valid = all(
+                int(counts.get(difficulty, 0)) >= minimum
+                for difficulty, minimum in DAILY_QUIZ_DISTRIBUTION.items()
+            )
             reviewed_confirm = st.checkbox(
                 "I have reviewed all questions, answers and explanations.",
                 disabled=bank_is_published,
@@ -4564,7 +4605,10 @@ def admin_quiz_page() -> None:
                         "reviewed_at": reviewed_at,
                         "reviewed_by": reviewer,
                     }).eq("id", review_quiz_id).execute()
-                    st.success("All 200 questions were approved and saved in Supabase.")
+                    st.success(
+                        f"All {len(review_frame)} questions were approved and "
+                        "saved in Supabase."
+                    )
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Question bank could not be approved: {exc}")
@@ -4618,10 +4662,21 @@ def admin_quiz_page() -> None:
                         .to_dict()
                         if not approved_rows.empty else {}
                     )
-                    if counts != QUIZ_BANK_DISTRIBUTION:
+                    distribution_valid = all(
+                        int(counts.get(difficulty, 0)) >= minimum
+                        for difficulty, minimum in DAILY_QUIZ_DISTRIBUTION.items()
+                    )
+                    all_questions_approved = (
+                        len(approved_rows) == len(question_rows)
+                    )
+                    if not all_questions_approved:
                         st.error(
-                            "This draft is incomplete. Required: 40 easy, "
-                            "100 medium and 60 hard questions."
+                            "Review and approve every saved question before publishing."
+                        )
+                    elif not distribution_valid:
+                        st.error(
+                            "This bank cannot supply a daily set. It requires "
+                            "at least 2 easy, 5 medium and 3 hard approved questions."
                         )
                     else:
                         db().table("quizzes").update(
