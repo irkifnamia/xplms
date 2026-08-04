@@ -5137,10 +5137,12 @@ def _legacy_award_xp_page() -> None:
         )
         confirmed = st.checkbox("I confirm this award is accurate and appropriate.")
         submitted = st.form_submit_button(
-            "Award XP", type="primary", disabled=not confirmed
+            "Award XP", type="primary"
         )
         if submitted:
-            if not reason.strip():
+            if not confirmed:
+                st.error("Confirm that this XP award is accurate.")
+            elif not reason.strip():
                 st.error("Add a reason before awarding XP.")
             elif is_demo():
                 st.success(f"Demo award recorded: +{points} XP for {labels[matric]}.")
@@ -5399,9 +5401,11 @@ def award_xp_page() -> None:
                     )
                 reason = st.text_area("Reason")
                 confirmed = st.checkbox("I confirm this XP entry is accurate.")
-                if st.form_submit_button("Record XP", type="primary", disabled=not confirmed):
+                if st.form_submit_button("Record XP", type="primary"):
                     numeric_points = pd.to_numeric(points, errors="coerce")
-                    if pd.isna(numeric_points) or int(numeric_points) == 0:
+                    if not confirmed:
+                        st.error("Confirm that this XP entry is accurate.")
+                    elif pd.isna(numeric_points) or int(numeric_points) == 0:
                         st.error("Enter a non-zero XP value.")
                     elif not reason.strip():
                         st.error("Add a reason for this XP entry.")
