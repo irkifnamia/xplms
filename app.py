@@ -945,8 +945,11 @@ def clear_student_preview_state() -> None:
 
 
 def ensure_preview_student() -> dict[str, Any] | None:
+    selected_id = st.session_state.get("admin_preview_student_id")
     existing = st.session_state.get("preview_student_user")
-    if existing:
+    if existing and (
+        selected_id is None or str(existing.get("id")) == str(selected_id)
+    ):
         return existing
     client = db()
     if not client:
@@ -966,7 +969,14 @@ def ensure_preview_student() -> dict[str, Any] | None:
         ]
         if not candidates:
             return None
-        selected = random.choice(candidates)
+        selected = next(
+            (
+                row for row in candidates
+                if str(row.get("id")) == str(selected_id)
+            ),
+            candidates[0],
+        )
+        st.session_state.admin_preview_student_id = selected["id"]
         preview_user = {
             "id": selected["id"],
             "name": selected.get("full_name") or selected.get("username") or "Student",
@@ -1489,6 +1499,88 @@ def sync_admin_preview(source_key: str) -> None:
         clear_student_preview_state()
 
 
+def sync_preview_student(source_key: str) -> None:
+    """Apply the administrator's chosen student preview identity."""
+    selected_id = st.session_state.get(source_key)
+    if selected_id is None:
+        return
+    clear_student_preview_state()
+    st.session_state.admin_preview_student_id = selected_id
+
+
+def preview_student_choices() -> tuple[list[Any], dict[Any, str]]:
+    """Return active student accounts and readable preview labels."""
+    try:
+        rows = _cached_table_rows("app_users")
+    except Exception:
+        return [], {}
+    students = [
+        row for row in rows
+        if str(row.get("role", "")).lower() == "student"
+        and bool(row.get("active", True))
+        and str(row.get("NO MATRIK") or "").strip()
+    ]
+    students.sort(
+        key=lambda row: (
+            str(row.get("full_name") or row.get("username") or "").lower(),
+            str(row.get("NO MATRIK") or ""),
+        )
+    )
+    try:
+        background_rows = _cached_table_rows("stud_background")
+    except Exception:
+        background_rows = []
+    background_by_matric = {
+        str(row.get("NO MATRIK")): row
+        for row in background_rows
+        if str(row.get("NO MATRIK") or "").strip()
+    }
+    identifiers = [row["id"] for row in students]
+    labels = {}
+    for row in students:
+        matric = str(row.get("NO MATRIK"))
+        background = background_by_matric.get(matric, {})
+        nickname = (
+            background.get("NICKNAME PELAJAR")
+            or background.get("nickname")
+            or row.get("full_name")
+            or row.get("username")
+            or "Student"
+        )
+        student_class = (
+            background.get("KELAS")
+            or background.get("class")
+            or "—"
+        )
+        labels[row["id"]] = (
+            f"{nickname} · {student_class} · {matric}"
+        ).upper()
+    return identifiers, labels
+
+
+def preview_student_selector(widget_key: str) -> None:
+    """Render a synchronized student selector for Admin preview mode."""
+    identifiers, labels = preview_student_choices()
+    if not identifiers:
+        st.warning("No active student account is available for preview.")
+        return
+    selected_id = st.session_state.get("admin_preview_student_id")
+    if selected_id not in identifiers:
+        selected_id = identifiers[0]
+        st.session_state.admin_preview_student_id = selected_id
+    if st.session_state.get(widget_key) != selected_id:
+        st.session_state[widget_key] = selected_id
+    st.selectbox(
+        "STUDENT TO PREVIEW",
+        identifiers,
+        format_func=lambda value: labels[value],
+        key=widget_key,
+        on_change=sync_preview_student,
+        args=(widget_key,),
+        help="Choose the student whose workspace and data you want to review.",
+    )
+
+
 def sidebar(role: str, name: str) -> str:
     with st.sidebar:
         if role == "Student":
@@ -1524,6 +1616,8 @@ def sidebar(role: str, name: str) -> str:
                 if selected_preview == "Admin":
                     clear_student_preview_state()
                 st.rerun()
+            if selected_preview == "Student":
+                preview_student_selector("sidebar_admin_preview_student")
         menus = {
             "Student": [
                 "Profile", "Materials", "Results", "Leaderboard 1",
@@ -1604,6 +1698,8 @@ def mobile_navigation(role: str, current_page: str) -> str:
                 args=(preview_key,),
                 help="Switch between the administrator and student views.",
             )
+            if st.session_state.get("admin_preview_role") == "Student":
+                preview_student_selector("mobile_admin_preview_student")
         with st.container(
             horizontal=True,
             horizontal_alignment="left",
@@ -3525,13 +3621,24 @@ def student_leaderboard_one_page() -> None:
                 hide_index=True, width="stretch",
             )
     with badge_tab:
-        selected_class = st.selectbox(
+        filter_left, filter_right = st.columns(2)
+        selected_class = filter_left.selectbox(
             "Class", ["ALL", *ctx["class_options"]],
             key="student_leaderboard_badge_class",
+        )
+        selected_badge_type = filter_right.selectbox(
+            "Badge type", ["ALL", "XP", "STREAK"],
+            key="student_leaderboard_badge_type",
         )
         rows = ctx["badge_history"]
         if selected_class != "ALL" and not rows.empty:
             rows = rows[rows["Class"].astype(str) == selected_class]
+        if selected_badge_type != "ALL" and not rows.empty:
+            rows = rows[
+                rows["Badge"].astype(str).str.upper().str.startswith(
+                    f"{selected_badge_type} "
+                )
+            ]
         if rows.empty:
             st.info("No student badge achievements are recorded.")
         else:
@@ -3546,8 +3653,16 @@ def student_leaderboard_one_page() -> None:
                 ).dt.strftime("%Y-%m-%d %H:%M:%S").fillna("—")
                 display["_sort"] = achieved
                 display = display.drop(columns=["earned_at"]).sort_values(
-                    "_sort", ascending=False
+                    ["_sort", "Student"],
+                    ascending=[True, True],
+                    na_position="last",
                 ).drop(columns=["_sort"])
+            else:
+                display = display.sort_values(
+                    ["Badge", "Student"], ascending=[True, True]
+                )
+            display = display.reset_index(drop=True)
+            display.insert(1, "Rank", range(1, len(display) + 1))
             mask = display["NO MATRIK"].astype(str) == ctx["current_matric"]
             st.dataframe(
                 highlight_current_rows(display.drop(columns=["NO MATRIK"]), mask),
