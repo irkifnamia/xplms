@@ -4359,19 +4359,21 @@ def admin_quiz_page() -> None:
             }
             requested_total = sum(requested_counts.values())
             st.caption(
-                f"{requested_total} new question(s) will be generated and added "
+                "The selected quantities will be generated and added "
                 "incrementally. Existing saved questions are retained unless "
                 "Discard mode is selected."
             )
             generate = st.form_submit_button(
                 "Generate and add",
                 type="primary",
-                disabled=(
-                    not bool(openai_api_key()) or requested_total == 0
-                ),
+                disabled=not bool(openai_api_key()),
             )
             if generate:
-                if discard_existing and not discard_confirmed:
+                if requested_total == 0:
+                    st.error(
+                        "Enter at least one Easy, Medium or Hard question."
+                    )
+                elif discard_existing and not discard_confirmed:
                     st.error(
                         "Confirm that you understand the existing draft "
                         "questions will be permanently deleted."
