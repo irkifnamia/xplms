@@ -5438,9 +5438,51 @@ def award_xp_page() -> None:
             st.info("No pending XP requests.")
         else:
             client = db()
+
+            def approve_pending_claim(
+                claim_row: pd.Series, points: int, admin_note: str = ""
+            ) -> None:
+                """Approve one request using its displayed or quick XP value."""
+                if not claims_live:
+                    st.success("Demo request approved.")
+                    return
+                if int(points) == 0:
+                    st.error("XP award cannot be zero.")
+                    return
+                try:
+                    claim_rule = str(
+                        claim_row.get("claim_type", "study_group")
+                    )
+                    event = client.table("xp_events").insert({
+                        "NO MATRIK": claim_row["NO MATRIK"],
+                        "rule_code": claim_rule,
+                        "points": int(points),
+                        "source_id": f"claim-{claim_row['id']}",
+                        "reason": claim_row["title"],
+                        "award_mode": "manual",
+                        "created_at": claim_row.get("created_at"),
+                        "awarded_by": st.session_state.user["id"],
+                    }).execute().data[0]
+                    client.table("xp_claims").update({
+                        "status": "approved",
+                        "admin_note": admin_note,
+                        "reviewed_by": st.session_state.user["id"],
+                        "reviewed_at": datetime.now().isoformat(),
+                        "xp_event_id": event["id"],
+                    }).eq("id", claim_row["id"]).execute()
+                    refresh_after_mutation(
+                        "xp_events", "xp_claims", "stud_xp",
+                        "student_badges", "student_activity_days",
+                    )
+                except Exception as exc:
+                    st.error(f"Request approval failed: {exc}")
+
             for _, claim in claims.iterrows():
                 label = str(claim.get("claim_type", "study_group")).replace("_", " ").title()
-                with st.expander(
+                request_column, quick_column = st.columns(
+                    [9, 1.25], vertical_alignment="center"
+                )
+                with request_column.expander(
                     f"{label} · {claim.get('title', 'XP request')} · "
                     f"{identity_label(claim.get('NO MATRIK', ''))}"
                 ):
@@ -5496,32 +5538,7 @@ def award_xp_page() -> None:
                     note = st.text_input("Admin note", key=f"tab_claim_note_{claim['id']}")
                     approve, reject = st.columns(2)
                     if approve.button("Approve", type="primary", key=f"tab_approve_{claim['id']}"):
-                        if not claims_live:
-                            st.success("Demo request approved.")
-                        else:
-                            try:
-                                points = int(approval_points)
-                                if points == 0:
-                                    raise ValueError("XP award cannot be zero.")
-                                event = client.table("xp_events").insert({
-                                    "NO MATRIK": claim["NO MATRIK"], "rule_code": rule_code,
-                                    "points": points, "source_id": f"claim-{claim['id']}",
-                                    "reason": claim["title"], "award_mode": "manual",
-                                    "created_at": claim.get("created_at"),
-                                    "awarded_by": st.session_state.user["id"],
-                                }).execute().data[0]
-                                client.table("xp_claims").update({
-                                    "status": "approved", "admin_note": note,
-                                    "reviewed_by": st.session_state.user["id"],
-                                    "reviewed_at": datetime.now().isoformat(),
-                                    "xp_event_id": event["id"],
-                                }).eq("id", claim["id"]).execute()
-                                refresh_after_mutation(
-                                    "xp_events", "xp_claims", "stud_xp",
-                                    "student_badges", "student_activity_days",
-                                )
-                            except Exception as exc:
-                                st.error(f"Request approval failed: {exc}")
+                        approve_pending_claim(claim, int(approval_points), note)
                     if reject.button("Reject", key=f"tab_reject_{claim['id']}"):
                         if not claims_live:
                             st.info("Demo request rejected.")
@@ -5532,6 +5549,15 @@ def award_xp_page() -> None:
                                 "reviewed_at": datetime.now().isoformat(),
                             }).eq("id", claim["id"]).execute()
                             refresh_after_mutation("xp_claims")
+                with quick_column:
+                    if st.button(
+                        "Approve",
+                        type="primary",
+                        key=f"quick_approve_claim_{claim['id']}",
+                        width="stretch",
+                        help=f"Approve immediately for {initial_points} XP.",
+                    ):
+                        approve_pending_claim(claim, initial_points)
     with records_tab:
         if events.empty or "id" not in events.columns:
             st.info("No XP records are available.")
