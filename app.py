@@ -51,7 +51,7 @@ class GeneratedQuiz(BaseModel):
 
 
 QUIZ_BANK_DISTRIBUTION = {"easy": 40, "medium": 100, "hard": 60}
-DAILY_QUIZ_DISTRIBUTION = {"easy": 2, "medium": 5, "hard": 3}
+DAILY_QUIZ_DISTRIBUTION = {"easy": 2, "medium": 4, "hard": 4}
 
 
 LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.png"
@@ -1251,7 +1251,7 @@ def generate_chapter_quiz_bank(
                 "chapter": int(chapter),
                 "title": f"C{chapter} AI question bank",
                 "instructions": (
-                    "Daily set: 2 easy, 5 medium and 3 hard questions."
+                    "Daily set: 2 easy, 4 medium and 4 hard questions."
                 ),
                 "xp_reward": 1,
                 "passing_score": 60,
@@ -4861,7 +4861,7 @@ def admin_quiz_page() -> None:
                     elif not distribution_valid:
                         st.error(
                             "This bank cannot supply a daily set. It requires "
-                            "at least 2 easy, 5 medium and 3 hard approved questions."
+                            "at least 2 easy, 4 medium and 4 hard approved questions."
                         )
                     else:
                         db().table("quizzes").update(
