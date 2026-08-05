@@ -38,6 +38,15 @@ create table if not exists public.quiz_question_reports (
   unique (attempt_id, question_id)
 );
 
+alter table public.quiz_question_reports
+  add column if not exists supporting_file_path text,
+  add column if not exists supporting_file_name text,
+  add column if not exists supporting_file_type text;
+
+insert into storage.buckets (id, name, public)
+values ('quiz-report-proofs', 'quiz-report-proofs', false)
+on conflict (id) do nothing;
+
 create index if not exists quiz_question_reports_status_created_idx
   on public.quiz_question_reports (status, created_at desc);
 create index if not exists quiz_question_reports_student_idx

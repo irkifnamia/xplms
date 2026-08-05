@@ -4500,6 +4500,31 @@ def render_quiz_question_reports() -> None:
         ):
             st.markdown(f"**Student reason:** {report.get('report_reason', '—')}")
             st.write(report.get("student_notes") or "No additional notes.")
+            supporting_path = report.get("supporting_file_path")
+            if pd.notna(supporting_path) and str(supporting_path).strip():
+                try:
+                    signed = client.storage.from_(
+                        "quiz-report-proofs"
+                    ).create_signed_url(str(supporting_path), 600)
+                    signed_url = (
+                        signed.get("signedURL")
+                        or signed.get("signedUrl")
+                        or signed.get("signed_url")
+                    )
+                    if signed_url:
+                        st.link_button(
+                            "Open supporting document",
+                            signed_url,
+                            help=(
+                                str(report.get("supporting_file_name"))
+                                if pd.notna(report.get("supporting_file_name"))
+                                else "Student supporting document"
+                            ),
+                        )
+                except Exception as exc:
+                    st.warning(
+                        f"Supporting document could not be opened: {exc}"
+                    )
             answer_index = report.get("student_answer")
             original_correct = snapshot.get("correct_index")
             st.caption(
@@ -5384,7 +5409,25 @@ def render_quiz_question_reporting(
                     "What appears to be wrong?",
                     key=f"report_notes_{attempt_id}_{question_id}",
                 )
+                supporting_file = st.file_uploader(
+                    "Supporting document (optional)",
+                    type=[
+                        "jpg", "jpeg", "png", "webp", "pdf",
+                        "doc", "docx", "txt",
+                    ],
+                    key=f"report_file_{attempt_id}_{question_id}",
+                    help=(
+                        "Optional image or document supporting the report. "
+                        "Maximum file size: 10 MB."
+                    ),
+                )
                 if st.form_submit_button("Submit question report"):
+                    if (
+                        supporting_file is not None
+                        and supporting_file.size > 10 * 1024 * 1024
+                    ):
+                        st.error("Supporting documents must not exceed 10 MB.")
+                        continue
                     if preview_only:
                         st.info(
                             "Preview report simulated successfully. It was "
@@ -5392,6 +5435,29 @@ def render_quiz_question_reporting(
                         )
                         continue
                     try:
+                        supporting_path = None
+                        if supporting_file is not None:
+                            safe_name = re.sub(
+                                r"[^A-Za-z0-9._-]+", "_",
+                                Path(supporting_file.name).name,
+                            )
+                            supporting_path = (
+                                f"{current_user()['no_matrik']}/"
+                                f"attempt-{attempt_id}/question-{question_id}/"
+                                f"{secrets.token_hex(8)}_{safe_name}"
+                            )
+                            uploaded, upload_result = upload_file(
+                                "quiz-report-proofs",
+                                supporting_path,
+                                supporting_file.getvalue(),
+                                supporting_file.type
+                                or "application/octet-stream",
+                            )
+                            if not uploaded:
+                                raise RuntimeError(
+                                    "Supporting document upload failed: "
+                                    f"{upload_result}"
+                                )
                         snapshot = {
                             "id": question_id,
                             "quiz_id": question.get("quiz_id"),
@@ -5414,11 +5480,27 @@ def render_quiz_question_reporting(
                             "question_snapshot": snapshot,
                             "report_reason": reason_options[reason_label],
                             "student_notes": notes.strip() or None,
+                            "supporting_file_path": supporting_path,
+                            "supporting_file_name": (
+                                supporting_file.name
+                                if supporting_file is not None else None
+                            ),
+                            "supporting_file_type": (
+                                supporting_file.type
+                                if supporting_file is not None else None
+                            ),
                         }).execute()
                         invalidate_table_cache("quiz_question_reports")
                         st.success("Question report submitted for Admin review.")
                         st.rerun()
                     except Exception as exc:
+                        if supporting_path:
+                            try:
+                                client.storage.from_(
+                                    "quiz-report-proofs"
+                                ).remove([supporting_path])
+                            except Exception:
+                                pass
                         st.error(f"Question report could not be submitted: {exc}")
 
 
