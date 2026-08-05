@@ -3002,7 +3002,10 @@ def render_xp_streak_sop() -> None:
         {
             "XP event": "Quiz battle",
             "Method": "Automatic after both players complete all 10 questions",
-            "Points": "Loss 5 XP · Draw 8 XP · Win 10 XP",
+            "Points": (
+                "Loss 5 XP · Draw 8 XP · Win 10 XP · Early cancellation 0 XP; "
+                "opponent with 6 wins receives winner XP"
+            ),
             "Daily request quota": "Same opponent once per day",
         },
     ])
@@ -5988,6 +5991,30 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                 labels.get(str(active_match["player_b_id"]), "PLAYER B"),
                 int(active_match.get("player_b_wins") or 0),
             )
+            with st.expander("LEAVE BATTLE"):
+                st.warning(
+                    "Leaving normally cancels the battle and both players receive "
+                    "0 XP. If your opponent already has 6 question wins, your "
+                    "opponent wins the battle."
+                )
+                confirm_leave = st.checkbox(
+                    "I understand and want to leave this battle.",
+                    key=f"confirm_leave_battle_{battle_id}",
+                    disabled=preview,
+                )
+                if st.button(
+                    "LEAVE BATTLE NOW",
+                    key=f"leave_battle_{battle_id}",
+                    disabled=not confirm_leave or preview,
+                ):
+                    try:
+                        client.rpc("leave_battle", {
+                            "p_battle_id": battle_id,
+                            "p_student_user_id": user_id,
+                        }).execute()
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Battle could not be left: {exc}")
             try:
                 questions = client.table("battle_questions").select("*").eq(
                     "battle_id", battle_id
@@ -6159,6 +6186,11 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
             row for row in challenges
             if str(row.get("opponent_id")) == user_id and row.get("status") == "pending"
         ]
+        outgoing = [
+            row for row in challenges
+            if str(row.get("challenger_id")) == user_id
+            and row.get("status") == "pending"
+        ]
         if received:
             st.subheader("CHALLENGES RECEIVED")
             for challenge in received:
@@ -6183,37 +6215,6 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                         }).execute()
                         st.rerun()
 
-        online_cutoff = datetime.now(ZoneInfo("UTC")) - timedelta(seconds=90)
-        online_ids = {
-            str(row.get("student_user_id"))
-            for row in presence
-            if pd.to_datetime(row.get("last_seen_at"), utc=True).to_pydatetime()
-            >= online_cutoff
-            and str(row.get("student_user_id")) != user_id
-        }
-        st.subheader("ONLINE STUDENTS")
-        if not online_ids:
-            st.info("No other students are online in Battle right now.")
-        else:
-            opponent = st.selectbox(
-                "Choose an opponent",
-                sorted(online_ids, key=lambda value: labels.get(value, value)),
-                format_func=lambda value: f"ONLINE · {labels.get(value, value)}",
-            )
-            if st.button("SEND CHALLENGE", type="primary", disabled=preview):
-                try:
-                    client.rpc("send_battle_challenge", {
-                        "p_challenger_id": user_id,
-                        "p_opponent_id": opponent,
-                    }).execute()
-                    st.success("Challenge sent.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Challenge could not be sent: {exc}")
-        outgoing = [
-            row for row in challenges
-            if str(row.get("challenger_id")) == user_id and row.get("status") == "pending"
-        ]
         if outgoing:
             st.caption(
                 "WAITING FOR · " + ", ".join(
@@ -6221,18 +6222,60 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                     for row in outgoing
                 )
             )
+        if received or outgoing:
+            st.info(
+                "Only one opponent can be challenged at a time. Accept, reject, "
+                "or wait for the current challenge before selecting another student."
+            )
+        else:
+            online_cutoff = datetime.now(ZoneInfo("UTC")) - timedelta(seconds=90)
+            online_ids = {
+                str(row.get("student_user_id"))
+                for row in presence
+                if pd.to_datetime(row.get("last_seen_at"), utc=True).to_pydatetime()
+                >= online_cutoff
+                and str(row.get("student_user_id")) != user_id
+            }
+            st.subheader("ONLINE STUDENTS")
+            if not online_ids:
+                st.info("No other students are online in Battle right now.")
+            else:
+                opponent = st.selectbox(
+                    "Choose one opponent",
+                    sorted(online_ids, key=lambda value: labels.get(value, value)),
+                    format_func=lambda value: f"ONLINE · {labels.get(value, value)}",
+                )
+                if st.button("SEND CHALLENGE", type="primary", disabled=preview):
+                    try:
+                        client.rpc("send_battle_challenge", {
+                            "p_challenger_id": user_id,
+                            "p_opponent_id": opponent,
+                        }).execute()
+                        st.success("Challenge sent.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Challenge could not be sent: {exc}")
 
     with history_tab:
-        completed = [row for row in matches if row.get("status") == "completed"]
+        completed = [
+            row for row in matches
+            if row.get("status") in {"completed", "cancelled"}
+        ]
         if not completed:
-            st.info("No completed battles yet.")
+            st.info("No finished battles yet.")
         else:
             rows = []
             for match in completed:
                 is_a = str(match["player_a_id"]) == user_id
                 opponent_id = str(match["player_b_id"] if is_a else match["player_a_id"])
                 winner_id = str(match.get("winner_id") or "")
-                result = "DRAW" if not winner_id else ("WIN" if winner_id == user_id else "LOSS")
+                result = (
+                    "CANCELLED" if match.get("status") == "cancelled"
+                    else (
+                        "DRAW" if not winner_id
+                        else ("WIN" if winner_id == user_id else "LOSS")
+                    )
+                )
                 rows.append({
                     "Opponent": labels.get(opponent_id, opponent_id),
                     "Result": result,
@@ -6249,7 +6292,9 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
 
     with instructions_tab:
         st.markdown(
-            "- Challenge an online student. The same pair may battle only once per day.\n"
+            "- Challenge one online student. A player can have only one pending "
+            "challenge or active battle at a time. The same pair may battle only "
+            "once per day.\n"
             "- Each battle has **10 random published questions: 7 easy and 3 medium**.\n"
             "- Both players have **1 minute per question** and must complete all 10.\n"
             "- After each result, both players must press **Ready for next question**. "
@@ -6257,7 +6302,10 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
             "- One correct answer wins. If both are correct, the fastest wins. If "
             "both are wrong or correct at exactly the same time, the question is a draw.\n"
             "- The most question wins takes the battle. A completed loss earns **5 XP**, "
-            "a draw **8 XP**, and a win **10 XP**. Extra Special mode doubles these awards."
+            "a draw **8 XP**, and a win **10 XP**. Extra Special mode doubles these awards.\n"
+            "- Leaving before the opponent has 6 question wins cancels the battle and "
+            "both receive **0 XP**. If the opponent already has 6 wins, the opponent "
+            "wins the battle and receives the applicable winner XP."
         )
 
 
