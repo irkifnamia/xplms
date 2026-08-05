@@ -5322,26 +5322,28 @@ def render_quiz_question_reporting(
     chapter: int,
 ) -> None:
     """Let a student report a saved quiz question for Admin review."""
-    if is_read_only_session():
-        return
+    preview_only = is_admin_student_preview()
     client = db()
-    if not client:
+    if not client and not preview_only:
         return
-    try:
-        existing_rows = (
-            client.table("quiz_question_reports")
-            .select("question_id,status")
-            .eq("attempt_id", int(attempt_id))
-            .execute()
-            .data
-            or []
-        )
-    except Exception:
-        st.warning(
-            "Question reporting requires migration 021. Ask the administrator "
-            "to run supabase_migration_021_quiz_question_reports.sql."
-        )
-        return
+    if preview_only:
+        existing_rows = []
+    else:
+        try:
+            existing_rows = (
+                client.table("quiz_question_reports")
+                .select("question_id,status")
+                .eq("attempt_id", int(attempt_id))
+                .execute()
+                .data
+                or []
+            )
+        except Exception:
+            st.warning(
+                "Question reporting requires migration 021. Ask the administrator "
+                "to run supabase_migration_021_quiz_question_reports.sql."
+            )
+            return
     existing = {
         int(row["question_id"]): str(row.get("status", "pending"))
         for row in existing_rows
@@ -5383,6 +5385,12 @@ def render_quiz_question_reporting(
                     key=f"report_notes_{attempt_id}_{question_id}",
                 )
                 if st.form_submit_button("Submit question report"):
+                    if preview_only:
+                        st.info(
+                            "Preview report simulated successfully. It was "
+                            "discarded and Supabase was not changed."
+                        )
+                        continue
                     try:
                         snapshot = {
                             "id": question_id,
@@ -5463,6 +5471,32 @@ def quiz_page() -> None:
         chapters,
         format_func=lambda value: f"C{value} · 10 questions today",
     )
+
+    preview_result = st.session_state.get("preview_quiz_result")
+    if (
+        is_admin_student_preview()
+        and isinstance(preview_result, dict)
+        and int(preview_result.get("chapter", -1)) == int(chapter)
+        and str(preview_result.get("attempt_date")) == today
+    ):
+        preview_answers = preview_result.get("answers") or {}
+        preview_questions = preview_result.get("questions") or []
+        preview_correct = int(preview_result.get("correct", 0))
+        preview_xp = int(preview_result.get("xp_awarded", 0))
+        st.success(
+            f"Student preview result: {preview_correct}/10 correct · "
+            f"{preview_xp} XP simulated. Supabase was not changed."
+        )
+        render_incorrect_quiz_answers(
+            preview_questions, preview_answers
+        )
+        render_quiz_question_reporting(
+            0, preview_questions, preview_answers, int(chapter)
+        )
+        if st.button("Reset preview attempt", key="reset_preview_quiz"):
+            st.session_state.pop("preview_quiz_result", None)
+            st.rerun()
+        return
 
     if live:
         client = db()
@@ -5796,12 +5830,15 @@ def quiz_page() -> None:
                 score = correct / total_questions * 100
                 xp_awarded = 5 + correct
                 if is_admin_student_preview():
-                    st.success(
-                        f"Student preview result: {correct}/10 correct · "
-                        f"{xp_awarded} XP simulated. Answers, attempt history "
-                        "and XP were discarded; Supabase was not changed."
-                    )
-                    render_incorrect_quiz_answers(daily_questions, answers)
+                    st.session_state.preview_quiz_result = {
+                        "chapter": int(chapter),
+                        "attempt_date": today,
+                        "answers": dict(answers),
+                        "questions": daily_questions,
+                        "correct": int(correct),
+                        "xp_awarded": int(xp_awarded),
+                    }
+                    st.rerun()
                 elif not live:
                     st.success(
                         f"Demo result: {correct}/10 correct · {xp_awarded} XP."
