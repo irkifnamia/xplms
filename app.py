@@ -4361,16 +4361,276 @@ def render_published_question_review(
                     st.error(f"Published question could not be saved: {exc}")
 
 
+def render_quiz_question_reports() -> None:
+    """Admin queue for reported questions, bank edits and score correction."""
+    client = db()
+    if not client:
+        st.info("Question reports are unavailable in demo mode.")
+        return
+    try:
+        reports = pd.DataFrame(
+            client.table("quiz_question_reports")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        st.warning(
+            "Run supabase_migration_021_quiz_question_reports.sql to enable "
+            "student question reports and audited mark corrections."
+        )
+        return
+    if reports.empty:
+        st.info("No quiz question report has been submitted.")
+        return
+
+    status_filter = st.segmented_control(
+        "Report status",
+        ["pending", "accepted", "rejected", "all"],
+        default="pending",
+        format_func=str.upper,
+        key="quiz_report_status_filter",
+    )
+    shown = reports
+    if status_filter != "all":
+        shown = reports[reports["status"] == status_filter]
+    keyword = st.text_input(
+        "Search reports",
+        placeholder="Search student, NO MATRIK, chapter, reason or question…",
+        key="quiz_report_keyword",
+    ).strip().lower()
+    if keyword and not shown.empty:
+        searchable = shown.apply(
+            lambda row: " ".join(
+                str(row.get(column, "")) for column in (
+                    "NO MATRIK", "chapter", "report_reason",
+                    "student_notes", "question_snapshot", "status",
+                )
+            ).lower(),
+            axis=1,
+        )
+        shown = shown[searchable.str.contains(keyword, regex=False)]
+    if shown.empty:
+        st.info("No question report matches the selected filters.")
+        return
+
+    attempt_ids = shown["attempt_id"].dropna().astype(int).unique().tolist()
+    question_ids = shown["question_id"].dropna().astype(int).unique().tolist()
+    attempts = pd.DataFrame(
+        client.table("quiz_attempts").select("*").in_(
+            "id", attempt_ids
+        ).execute().data or []
+    )
+    current_questions = pd.DataFrame(
+        client.table("quiz_questions").select("*").in_(
+            "id", question_ids
+        ).execute().data or []
+    )
+    attempt_map = {
+        int(row["id"]): row.to_dict() for _, row in attempts.iterrows()
+    } if not attempts.empty else {}
+    question_map = {
+        int(row["id"]): row.to_dict()
+        for _, row in current_questions.iterrows()
+    } if not current_questions.empty else {}
+    students, _ = merged_students()
+    student_map = {}
+    if not students.empty and "NO MATRIK" in students.columns:
+        for _, row in students.drop_duplicates("NO MATRIK").iterrows():
+            matric = str(row["NO MATRIK"])
+            name_value = next(
+                (
+                    str(row.get(column)).strip()
+                    for column in (
+                        "Student", "NICKNAME PELAJAR", "nickname",
+                        "NAMA PELAJAR", "name",
+                    )
+                    if pd.notna(row.get(column))
+                    and str(row.get(column)).strip()
+                ),
+                "Student",
+            )
+            class_value = next(
+                (
+                    str(row.get(column)).strip()
+                    for column in ("Class", "KELAS", "class")
+                    if pd.notna(row.get(column))
+                    and str(row.get(column)).strip()
+                ),
+                "—",
+            )
+            student_map[matric] = (
+                name_value,
+                class_value,
+            )
+
+    for _, report in shown.iterrows():
+        report_id = int(report["id"])
+        matric = str(report.get("NO MATRIK", "—"))
+        student_name, student_class = student_map.get(
+            matric, ("Student", "—")
+        )
+        snapshot = report.get("question_snapshot") or {}
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except json.JSONDecodeError:
+                snapshot = {}
+        current = question_map.get(int(report["question_id"]), {})
+        current_options = current.get("options") or []
+        if isinstance(current_options, str):
+            try:
+                current_options = json.loads(current_options)
+            except json.JSONDecodeError:
+                current_options = []
+        attempt = attempt_map.get(int(report["attempt_id"]), {})
+        created = pd.to_datetime(
+            report.get("created_at"), errors="coerce", utc=True
+        )
+        created_text = (
+            created.tz_convert("Asia/Kuala_Lumpur").strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ) if pd.notna(created) else "—"
+        )
+        with st.expander(
+            f"{str(report.get('status', '')).upper()} · C{report.get('chapter')} "
+            f"· {student_name} · {student_class} · {matric} · {created_text}"
+        ):
+            st.markdown(f"**Student reason:** {report.get('report_reason', '—')}")
+            st.write(report.get("student_notes") or "No additional notes.")
+            answer_index = report.get("student_answer")
+            original_correct = snapshot.get("correct_index")
+            st.caption(
+                f"Attempt result: {attempt.get('correct_count', '—')}/"
+                f"{attempt.get('total_questions', '—')} · "
+                f"{attempt.get('xp_awarded', '—')} XP · "
+                f"Student answer: {('A', 'B', 'C', 'D')[int(answer_index)] if answer_index is not None else '—'} · "
+                f"Original answer: {('A', 'B', 'C', 'D')[int(original_correct)] if original_correct is not None else '—'}"
+            )
+            left, right = st.columns(2)
+            with left:
+                st.markdown("**Question shown during the attempt**")
+                st.markdown(str(snapshot.get("question", "Unavailable")))
+                for index, option in enumerate(snapshot.get("options") or []):
+                    st.markdown(f"**{('A', 'B', 'C', 'D')[index]}.** {option}")
+                st.markdown(
+                    f"**Explanation:** {snapshot.get('explanation') or '—'}"
+                )
+            with right:
+                st.markdown("**Current question-bank version**")
+                st.markdown(str(current.get("question", "Unavailable")))
+                for index, option in enumerate(current_options):
+                    st.markdown(f"**{('A', 'B', 'C', 'D')[index]}.** {option}")
+
+            if current:
+                while len(current_options) < 4:
+                    current_options.append("")
+                with st.form(f"reported_question_edit_{report_id}"):
+                    edited_question = st.text_area(
+                        "Question", value=str(current.get("question", ""))
+                    )
+                    edited_options = [
+                        st.text_input(
+                            f"Option {letter}",
+                            value=str(current_options[index]),
+                        )
+                        for index, letter in enumerate(("A", "B", "C", "D"))
+                    ]
+                    edited_correct = st.selectbox(
+                        "Correct answer", range(4),
+                        index=int(current.get("correct_index", 0)),
+                        format_func=lambda value: ("A", "B", "C", "D")[value],
+                    )
+                    edited_explanation = st.text_area(
+                        "Explanation", value=str(current.get("explanation", ""))
+                    )
+                    if st.form_submit_button("Save question-bank correction"):
+                        if (
+                            not edited_question.strip()
+                            or not edited_explanation.strip()
+                            or any(not option.strip() for option in edited_options)
+                            or len({option.strip() for option in edited_options}) != 4
+                        ):
+                            st.error(
+                                "Complete the question, four different options "
+                                "and explanation."
+                            )
+                        else:
+                            try:
+                                client.table("quiz_questions").update({
+                                    "question": edited_question.strip(),
+                                    "options": [
+                                        option.strip() for option in edited_options
+                                    ],
+                                    "correct_index": int(edited_correct),
+                                    "explanation": edited_explanation.strip(),
+                                    "review_status": "approved",
+                                    "reviewed_at": datetime.now().isoformat(),
+                                    "reviewed_by": st.session_state.user["id"],
+                                }).eq("id", int(report["question_id"])).execute()
+                                invalidate_table_cache("quiz_questions")
+                                st.success("Question bank corrected successfully.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Question bank could not be updated: {exc}")
+
+            if str(report.get("status")) == "pending" and attempt:
+                with st.form(f"resolve_question_report_{report_id}"):
+                    resolution = st.radio(
+                        "Resolution", ["ACCEPT", "REJECT"], horizontal=True
+                    )
+                    corrected_count = st.number_input(
+                        "Corrected number of correct answers",
+                        min_value=0,
+                        max_value=int(attempt.get("total_questions", 10)),
+                        value=int(attempt.get("correct_count", 0)),
+                        step=1,
+                        help=(
+                            "Accepted reports recalculate the score and quiz XP "
+                            "as 5 completion XP plus 1 XP per correct answer."
+                        ),
+                    )
+                    admin_notes = st.text_area("Admin review notes")
+                    if st.form_submit_button("Resolve report", type="primary"):
+                        try:
+                            client.rpc(
+                                "resolve_quiz_question_report",
+                                {
+                                    "p_report_id": report_id,
+                                    "p_status": resolution.lower() + "ed",
+                                    "p_admin_notes": admin_notes.strip(),
+                                    "p_corrected_correct_count": int(
+                                        corrected_count
+                                    ),
+                                    "p_reviewed_by": st.session_state.user["id"],
+                                },
+                            ).execute()
+                            invalidate_table_cache(
+                                "quiz_question_reports", "quiz_attempts",
+                                "xp_events", "stud_xp", "student_badges",
+                            )
+                            st.success("Question report resolved successfully.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Question report could not be resolved: {exc}")
+
+
 def admin_quiz_page() -> None:
     heading(
         "Assessment builder",
         "AI quiz generation",
         "Create, review and publish chapter question banks.",
     )
-    generation_tab, draft_review_tab, published_review_tab, library_tab = st.tabs([
+    (
+        generation_tab, draft_review_tab, published_review_tab,
+        reports_tab, library_tab,
+    ) = st.tabs([
         "QUIZ GENERATION",
         "QUESTION DRAFT REVIEW",
         "QUESTION BANK REVIEW",
+        "QUESTION REPORTS",
         "QUIZ LIBRARY",
     ])
     generation_tab.__enter__()
@@ -4912,6 +5172,9 @@ def admin_quiz_page() -> None:
     published_review_tab.__enter__()
     render_published_question_review(quizzes, quiz_live)
     published_review_tab.__exit__(None, None, None)
+    reports_tab.__enter__()
+    render_quiz_question_reports()
+    reports_tab.__exit__(None, None, None)
     library_tab.__enter__()
     if quiz_live:
         try:
@@ -5052,6 +5315,105 @@ def render_incorrect_quiz_answers(
             )
 
 
+def render_quiz_question_reporting(
+    attempt_id: int,
+    questions: list[dict[str, Any]],
+    answers: dict[str, Any],
+    chapter: int,
+) -> None:
+    """Let a student report a saved quiz question for Admin review."""
+    if is_read_only_session():
+        return
+    client = db()
+    if not client:
+        return
+    try:
+        existing_rows = (
+            client.table("quiz_question_reports")
+            .select("question_id,status")
+            .eq("attempt_id", int(attempt_id))
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        st.warning(
+            "Question reporting requires migration 021. Ask the administrator "
+            "to run supabase_migration_021_quiz_question_reports.sql."
+        )
+        return
+    existing = {
+        int(row["question_id"]): str(row.get("status", "pending"))
+        for row in existing_rows
+    }
+    st.subheader("Report a question")
+    st.caption(
+        "Report a question only when its wording, options, answer or explanation "
+        "may be incorrect. Your original result remains unchanged until Admin review."
+    )
+    reason_options = {
+        "Incorrect answer": "incorrect_answer",
+        "Unclear question": "unclear_question",
+        "Duplicate or invalid options": "duplicate_options",
+        "Mathematical formatting error": "formatting_error",
+        "Other": "other",
+    }
+    for number, question in enumerate(questions, start=1):
+        question_id = int(question["id"])
+        status = existing.get(question_id)
+        label = f"Q{number} · {str(question.get('question', ''))[:90]}"
+        with st.expander(label):
+            if status:
+                st.info(f"Already reported · Status: {status.upper()}")
+                continue
+            st.markdown(str(question.get("question", "")))
+            options = question.get("options") or []
+            if isinstance(options, str):
+                try:
+                    options = json.loads(options)
+                except json.JSONDecodeError:
+                    options = []
+            with st.form(f"report_question_{attempt_id}_{question_id}"):
+                reason_label = st.selectbox(
+                    "Reason", list(reason_options),
+                    key=f"report_reason_{attempt_id}_{question_id}",
+                )
+                notes = st.text_area(
+                    "What appears to be wrong?",
+                    key=f"report_notes_{attempt_id}_{question_id}",
+                )
+                if st.form_submit_button("Submit question report"):
+                    try:
+                        snapshot = {
+                            "id": question_id,
+                            "quiz_id": question.get("quiz_id"),
+                            "position": question.get("position"),
+                            "difficulty": question.get("difficulty"),
+                            "question": question.get("question"),
+                            "options": list(options),
+                            "correct_index": int(
+                                question.get("correct_index", 0)
+                            ),
+                            "explanation": question.get("explanation"),
+                        }
+                        client.table("quiz_question_reports").insert({
+                            "attempt_id": int(attempt_id),
+                            "question_id": question_id,
+                            "student_user_id": current_user()["id"],
+                            "NO MATRIK": current_user()["no_matrik"],
+                            "chapter": int(chapter),
+                            "student_answer": int(answers[str(question_id)]),
+                            "question_snapshot": snapshot,
+                            "report_reason": reason_options[reason_label],
+                            "student_notes": notes.strip() or None,
+                        }).execute()
+                        invalidate_table_cache("quiz_question_reports")
+                        st.success("Question report submitted for Admin review.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Question report could not be submitted: {exc}")
+
+
 def quiz_page() -> None:
     heading(
         "Daily knowledge check",
@@ -5111,8 +5473,8 @@ def quiz_page() -> None:
                 attempt_history = (
                     client.table("quiz_attempts")
                     .select(
-                        "score,correct_count,total_questions,xp_awarded,"
-                        "completed_at,attempt_date,answers"
+                        "id,score,correct_count,total_questions,xp_awarded,"
+                        "completed_at,attempt_date,answers,question_snapshot"
                     )
                     .eq("student_user_id", user["id"])
                     .eq("chapter", int(chapter))
@@ -5143,24 +5505,40 @@ def quiz_page() -> None:
                 except json.JSONDecodeError:
                     saved_answers = {}
             if isinstance(saved_answers, dict) and saved_answers:
+                saved_snapshot = result.get("question_snapshot") or []
+                if isinstance(saved_snapshot, str):
+                    try:
+                        saved_snapshot = json.loads(saved_snapshot)
+                    except json.JSONDecodeError:
+                        saved_snapshot = []
+                review_questions = (
+                    saved_snapshot if isinstance(saved_snapshot, list) else []
+                )
                 question_ids = [
-                    int(question_id)
-                    for question_id in saved_answers
+                    int(question_id) for question_id in saved_answers
                     if str(question_id).isdigit()
                 ]
-                if question_ids:
+                if not review_questions and question_ids:
                     review_questions = (
                         client.table("quiz_questions")
                         .select(
-                            "id,question,options,correct_index,explanation"
+                            "id,quiz_id,position,difficulty,question,options,"
+                            "correct_index,explanation"
                         )
                         .in_("id", question_ids)
                         .execute()
                         .data
                         or []
                     )
+                if review_questions:
                     render_incorrect_quiz_answers(
                         review_questions, saved_answers
+                    )
+                    render_quiz_question_reporting(
+                        int(result["id"]),
+                        review_questions,
+                        saved_answers,
+                        int(chapter),
                     )
             return
         seen_question_ids: set[str] = set()
@@ -5221,9 +5599,11 @@ def quiz_page() -> None:
     else:
         quiz_ids = [1]
         seen_question_ids = set()
-        demo_difficulties = (
-            ["easy"] * 2 + ["medium"] * 5 + ["hard"] * 3
-        )
+        demo_difficulties = [
+            difficulty
+            for difficulty, count in DAILY_QUIZ_DISTRIBUTION.items()
+            for _ in range(count)
+        ]
         questions = [
             {
                 "id": index,
@@ -5434,6 +5814,21 @@ def quiz_page() -> None:
                             "student_user_id": user["id"],
                             "NO MATRIK": user["no_matrik"],
                             "answers": answers,
+                            "question_snapshot": [
+                                {
+                                    "id": int(question["id"]),
+                                    "quiz_id": question.get("quiz_id"),
+                                    "position": question.get("position"),
+                                    "difficulty": question.get("difficulty"),
+                                    "question": question.get("question"),
+                                    "options": question.get("options"),
+                                    "correct_index": int(
+                                        question.get("correct_index", 0)
+                                    ),
+                                    "explanation": question.get("explanation"),
+                                }
+                                for question in daily_questions
+                            ],
                             "score": score,
                             "correct_count": correct,
                             "total_questions": total_questions,
@@ -5459,12 +5854,7 @@ def quiz_page() -> None:
                             "xp_event_id": event["id"]
                         }).eq("id", attempt["id"]).execute()
                         st.cache_data.clear()
-                        st.success(
-                            f"{correct}/10 correct · {xp_awarded} XP awarded."
-                        )
-                        render_incorrect_quiz_answers(
-                            daily_questions, answers
-                        )
+                        st.rerun()
                     except Exception as exc:
                         st.error(f"Quiz result could not be saved: {exc}")
 
