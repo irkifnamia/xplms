@@ -1630,6 +1630,7 @@ def sidebar(role: str, name: str) -> str:
                 "Material",
                 "Quiz",
                 "Award XP",
+                "XP Mode",
                 "SOP",
                 "Student record",
                 "Analysis background",
@@ -1668,7 +1669,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
             "XP: Journey", "XP: SOP", "XP: Request",
         ],
         "Admin": [
-            "User access", "CRUD", "Material", "Quiz", "Award XP", "SOP",
+            "User access", "CRUD", "Material", "Quiz", "Award XP", "XP Mode", "SOP",
             "Student record", "Analysis background", "Analysis results",
             "Analysis XP",
         ],
@@ -1890,6 +1891,63 @@ def student_xpteam(user: dict[str, Any]) -> str:
         return "—"
     value = matched.iloc[0].get("XPTEAM")
     return "—" if pd.isna(value) or not str(value).strip() else str(value)
+
+
+def xp_mode_status(user: dict[str, Any]) -> dict[str, Any]:
+    """Return today's XP mode, multiplier and class eligibility."""
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
+    schedule, live = fetch_table("xp_mode_schedule", pd.DataFrame())
+    mode = "normal"
+    selected_classes: list[str] = []
+    if live and not schedule.empty and "mode_date" in schedule.columns:
+        today_rows = schedule[
+            schedule["mode_date"].astype(str) == today
+        ]
+        if not today_rows.empty:
+            row = today_rows.iloc[0]
+            mode = str(row.get("mode") or "normal").lower()
+            raw_classes = row.get("selected_classes") or []
+            if isinstance(raw_classes, str):
+                raw_classes = [
+                    value.strip().strip('"')
+                    for value in raw_classes.strip("{}").split(",")
+                    if value.strip()
+                ]
+            selected_classes = [str(value) for value in raw_classes]
+    _, student_class = student_identity(user)
+    allowed = mode == "normal" or student_class in selected_classes
+    return {
+        "date": today,
+        "mode": mode,
+        "label": mode.replace("_", " ").upper(),
+        "selected_classes": selected_classes,
+        "student_class": student_class,
+        "allowed": allowed,
+        "multiplier": 2 if mode == "extra_special" else 1,
+        "configured": live,
+    }
+
+
+def render_student_xp_mode_banner(status: dict[str, Any]) -> None:
+    """Explain today's XP availability without blocking non-XP pages."""
+    if status["mode"] == "normal":
+        return
+    if not status["allowed"]:
+        st.error(
+            f"{status['label']} MODE · XP activities are locked today for "
+            f"class {status['student_class']}. Your streak is paused today and "
+            "will continue from its previous count on the next eligible day."
+        )
+    elif status["multiplier"] == 2:
+        st.success(
+            f"EXTRA SPECIAL MODE · Class {status['student_class']} is "
+            "eligible today. Every new XP award is doubled automatically."
+        )
+    else:
+        st.info(
+            f"SPECIAL MODE · Class {status['student_class']} is eligible "
+            "for normal XP collection today."
+        )
 
 
 ASSESSMENT_COLUMNS = [
@@ -2638,12 +2696,23 @@ def _legacy_student_leaderboard_page() -> None:
 def request_xp_page() -> None:
     heading("", "XP: Request")
     user = current_user()
+    mode_status = xp_mode_status(user)
     claims, live = fetch_filtered_table(
         "xp_claims", "NO MATRIK", user.get("no_matrik")
     )
 
     request_tab, list_tab = st.tabs(["REQUEST XP", "MY XP REQUEST"])
     with request_tab:
+        if not mode_status["allowed"]:
+            st.error(
+                f"XP requests are locked today for class "
+                f"{mode_status['student_class']} under {mode_status['label']} mode."
+            )
+        elif mode_status["multiplier"] == 2:
+            st.success(
+                "Extra Special mode is active. Approved XP from today's "
+                "request will be doubled automatically."
+            )
         claim_type = st.selectbox(
             "XP type",
             XP_REQUEST_TYPES,
@@ -2673,7 +2742,11 @@ def request_xp_page() -> None:
             proof = st.file_uploader(
                 "Proof image (optional)", type=["jpg", "jpeg", "png", "webp"]
             )
-            if st.form_submit_button("Send for approval", type="primary"):
+            if st.form_submit_button(
+                "Send for approval",
+                type="primary",
+                disabled=not mode_status["allowed"],
+            ):
                 if not title.strip() or not description.strip():
                     st.error("Complete the title and description.")
                 elif quota and xp_requests_today(claims, claim_type) >= quota:
@@ -2732,6 +2805,117 @@ def request_xp_page() -> None:
             )
 
 
+def admin_xp_mode_page() -> None:
+    heading("", "XP MODE")
+    schedule, live = fetch_table("xp_mode_schedule", pd.DataFrame())
+    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+    classes = (
+        sorted(
+            background["KELAS"].dropna().astype(str).str.strip()
+            .loc[lambda values: values != ""].unique().tolist()
+        )
+        if not background.empty and "KELAS" in background.columns
+        else []
+    )
+    malaysia_today = datetime.now(
+        ZoneInfo("Asia/Kuala_Lumpur")
+    ).date()
+    selected_date = st.date_input(
+        "Mode date", value=malaysia_today,
+        key="admin_xp_mode_date",
+    )
+    existing = pd.DataFrame()
+    if live and not schedule.empty and "mode_date" in schedule.columns:
+        existing = schedule[
+            schedule["mode_date"].astype(str) == selected_date.isoformat()
+        ]
+    existing_mode = (
+        str(existing.iloc[0].get("mode", "normal"))
+        if not existing.empty else "normal"
+    )
+    existing_classes = (
+        existing.iloc[0].get("selected_classes") or []
+        if not existing.empty else []
+    )
+    if isinstance(existing_classes, str):
+        existing_classes = [
+            value.strip().strip('"')
+            for value in existing_classes.strip("{}").split(",")
+            if value.strip()
+        ]
+    mode_labels = {
+        "normal": "NORMAL",
+        "special": "SPECIAL",
+        "extra_special": "EXTRA SPECIAL",
+    }
+    with st.form(f"xp_mode_form_{selected_date.isoformat()}"):
+        mode = st.radio(
+            "XP mode",
+            list(mode_labels),
+            index=list(mode_labels).index(existing_mode),
+            format_func=lambda value: mode_labels[value],
+            horizontal=True,
+        )
+        selected_classes = st.multiselect(
+            "Classes allowed to collect XP",
+            classes,
+            default=[
+                value for value in existing_classes if value in classes
+            ],
+            help=(
+                "Ignored in Normal mode. Special modes lock every class that "
+                "is not selected."
+            ),
+        )
+        if mode == "normal":
+            st.info("All classes collect XP at the standard value.")
+        elif mode == "special":
+            st.info(
+                "Selected classes collect standard XP. All other classes are locked."
+            )
+        else:
+            st.warning(
+                "Selected classes receive double XP for every new event. "
+                "All other classes are locked."
+            )
+        if st.form_submit_button("Save XP mode", type="primary"):
+            if mode != "normal" and not selected_classes:
+                st.error("Select at least one class for a Special mode.")
+            elif not live:
+                st.warning(
+                    "Run supabase_migration_022_daily_xp_modes.sql before "
+                    "saving an XP mode."
+                )
+            else:
+                try:
+                    db().table("xp_mode_schedule").upsert({
+                        "mode_date": selected_date.isoformat(),
+                        "mode": mode,
+                        "selected_classes": (
+                            selected_classes if mode != "normal" else []
+                        ),
+                        "configured_by": st.session_state.user["id"],
+                        "updated_at": datetime.now().isoformat(),
+                    }, on_conflict="mode_date").execute()
+                    refresh_after_mutation("xp_mode_schedule")
+                except Exception as exc:
+                    st.error(f"XP mode could not be saved: {exc}")
+
+    st.subheader("Mode schedule")
+    if schedule.empty:
+        st.info("No XP mode schedule is recorded. Normal mode applies by default.")
+    else:
+        columns = [
+            column for column in (
+                "mode_date", "mode", "selected_classes", "updated_at"
+            ) if column in schedule.columns
+        ]
+        st.dataframe(
+            schedule[columns].sort_values("mode_date", ascending=False),
+            hide_index=True, width="stretch",
+        )
+
+
 def render_xp_streak_sop() -> None:
     sop = pd.DataFrame([
         {
@@ -2788,6 +2972,32 @@ def render_xp_streak_sop() -> None:
         hide_index=False,
         width="stretch",
     )
+    st.subheader("XP MODE SOP")
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "Mode": "Normal",
+                "Eligible classes": "All classes",
+                "XP value": "Standard (1×)",
+            },
+            {
+                "Mode": "Special",
+                "Eligible classes": "Admin-selected classes only",
+                "XP value": "Standard (1×)",
+            },
+            {
+                "Mode": "Extra Special",
+                "Eligible classes": "Admin-selected classes only",
+                "XP value": "Double (2×) for every new XP event",
+            },
+        ]).set_index("Mode"),
+        hide_index=False,
+        width="stretch",
+    )
+    st.caption(
+        "In Special modes, unselected classes cannot submit XP requests, "
+        "attempt XP quizzes, receive manual XP or receive approved-request XP."
+    )
     st.subheader("STREAK SOP")
     streak_sop = pd.DataFrame([
         {
@@ -2811,9 +3021,12 @@ def render_xp_streak_sop() -> None:
     st.markdown(
         "- One qualifying activity is enough to capture the streak day; additional "
         "qualifying activities on the same date do not add extra days.\n"
-        "- Streak days must be consecutive using the Malaysia calendar date.\n"
-        "- Today remains available until the day ends. If a completed day is "
-        "missed, the current streak resets to **0**.\n"
+        "- Streak days must be consecutive **eligible** Malaysia calendar dates.\n"
+        "- When Special or Extra Special mode blocks a student's class, that date "
+        "pauses the streak: it adds no day and does not reset the count. The next "
+        "eligible qualifying activity continues from the previous count.\n"
+        "- Today remains available until the day ends. If an eligible completed day "
+        "is missed, the current streak resets to **0**.\n"
         "- Streak badges already captured remain permanent after a streak reset."
     )
 
@@ -2982,7 +3195,10 @@ def my_xp_page() -> None:
         else:
             visible = [
                 c for c in
-                ["created_at", "rule_code", "points", "reason", "award_mode"]
+                [
+                    "created_at", "rule_code", "base_points", "mode_multiplier",
+                    "points", "xp_mode", "reason", "award_mode",
+                ]
                 if c in history.columns
             ]
             st.dataframe(
@@ -5511,6 +5727,7 @@ def quiz_page() -> None:
         "Answer 10 random questions per chapter each day and earn automatic XP.",
     )
     user = current_user()
+    mode_status = xp_mode_status(user)
     today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
     quizzes, quizzes_live = fetch_table("quizzes", pd.DataFrame())
     live = quizzes_live
@@ -5656,6 +5873,12 @@ def quiz_page() -> None:
                         saved_answers,
                         int(chapter),
                     )
+            return
+        if not mode_status["allowed"]:
+            st.error(
+                f"Quiz XP activity is locked today for class "
+                f"{mode_status['student_class']} under {mode_status['label']} mode."
+            )
             return
         seen_question_ids: set[str] = set()
         for attempt in attempt_history:
@@ -5910,7 +6133,11 @@ def quiz_page() -> None:
                 )
                 total_questions = len(daily_questions)
                 score = correct / total_questions * 100
-                xp_awarded = 5 + correct
+                base_xp = 5 + correct
+                xp_awarded = (
+                    base_xp * int(mode_status["multiplier"])
+                    if is_admin_student_preview() else base_xp
+                )
                 if is_admin_student_preview():
                     st.session_state.preview_quiz_result = {
                         "chapter": int(chapter),
@@ -5954,12 +6181,12 @@ def quiz_page() -> None:
                             "passed": score >= 60,
                             "chapter": int(chapter),
                             "attempt_date": today,
-                            "xp_awarded": xp_awarded,
+                            "xp_awarded": base_xp,
                         }).execute().data[0]
                         event = client.table("xp_events").insert({
                             "NO MATRIK": user["no_matrik"],
                             "rule_code": "quiz_completion",
-                            "points": xp_awarded,
+                            "points": base_xp,
                             "source_id": f"daily-quiz-{chapter}-{today}",
                             "reason": (
                                 f"Daily C{chapter} quiz: "
@@ -5970,7 +6197,8 @@ def quiz_page() -> None:
                             "awarded_by": None,
                         }).execute().data[0]
                         client.table("quiz_attempts").update({
-                            "xp_event_id": event["id"]
+                            "xp_event_id": event["id"],
+                            "xp_awarded": int(event["points"]),
                         }).eq("id", attempt["id"]).execute()
                         st.cache_data.clear()
                         st.rerun()
@@ -6256,9 +6484,19 @@ def award_xp_page() -> None:
             shown_events["Method"] = shown_events.get(
                 "award_mode", pd.Series(index=shown_events.index, dtype=str)
             ).fillna("Unknown").astype(str).str.title()
+            if "xp_mode" in shown_events.columns:
+                shown_events["XP Mode"] = shown_events["xp_mode"].astype(
+                    str
+                ).str.replace("_", " ", regex=False).str.title()
+            if "mode_multiplier" in shown_events.columns:
+                shown_events["Multiplier"] = (
+                    shown_events["mode_multiplier"].fillna(1).astype(int)
+                    .astype(str) + "×"
+                )
             visible_columns = [
                 column for column in [
-                    "Time", "Student", "Type", "points", "Method", "reason",
+                    "Time", "Student", "Type", "points", "XP Mode",
+                    "Multiplier", "Method", "reason",
                 ] if column in shown_events.columns
             ]
             st.dataframe(
@@ -6310,7 +6548,7 @@ def award_xp_page() -> None:
                         st.success(f"Demo XP entry recorded: {int(numeric_points):+d} XP.")
                     else:
                         try:
-                            db().table("xp_events").insert({
+                            event = db().table("xp_events").insert({
                                 "NO MATRIK": matric,
                                 "rule_code": rule_code,
                                 "points": int(numeric_points),
@@ -6318,11 +6556,19 @@ def award_xp_page() -> None:
                                 "reason": reason.strip(),
                                 "award_mode": "manual",
                                 "awarded_by": st.session_state.user["id"],
-                            }).execute()
+                            }).execute().data[0]
                             invalidate_table_cache(
                                 "xp_events", "stud_xp", "student_badges"
                             )
-                            st.success(f"{int(numeric_points):+d} XP recorded for {labels[matric]}.")
+                            actual_points = int(event.get("points", numeric_points))
+                            multiplier = int(event.get("mode_multiplier", 1))
+                            st.success(
+                                f"{actual_points:+d} XP recorded for {labels[matric]}."
+                                + (
+                                    " Extra Special 2× multiplier applied."
+                                    if multiplier == 2 else ""
+                                )
+                            )
                         except Exception as exc:
                             st.error(f"XP could not be recorded: {exc}")
 
@@ -7626,6 +7872,7 @@ def main() -> None:
                 f"{preview_user.get('no_matrik', '—')} · "
                 "Read-only: all submissions and changes are discarded."
             )
+        render_student_xp_mode_banner(xp_mode_status(current_user()))
         {
             "Results": progress_page,
             "Materials": materials_page,
@@ -7645,6 +7892,7 @@ def main() -> None:
             "Analysis XP": analysis_xp_page,
             "CRUD": admin_crud_page,
             "Award XP": award_xp_page,
+            "XP Mode": admin_xp_mode_page,
             "SOP": sop_page,
             "User access": user_access_page,
             "Material": lambda: materials_page(True),
