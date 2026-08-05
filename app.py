@@ -1649,7 +1649,7 @@ def sidebar(role: str, name: str) -> str:
         menus = {
             "Student": [
                 "Profile", "Materials", "Results", "Leaderboard 1",
-                "Leaderboard 2", "Quiz",
+                "Leaderboard 2", "Quiz", "Battle",
                 "XP: Journey", "XP: SOP", "XP: Request",
             ],
             "Admin": [
@@ -1693,7 +1693,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
             "Profile", "Materials", "Results", "Leaderboard 1",
-            "Leaderboard 2", "Quiz",
+            "Leaderboard 2", "Quiz", "Battle",
             "XP: Journey", "XP: SOP", "XP: Request",
         ],
         "Admin": [
@@ -2994,6 +2994,12 @@ def render_xp_streak_sop() -> None:
             "Points": "1 XP per correct answer (maximum 10 XP)",
             "Daily request quota": "—",
         },
+        {
+            "XP event": "Quiz battle",
+            "Method": "Automatic after both players complete all 10 questions",
+            "Points": "Loss 5 XP · Draw 8 XP · Win 10 XP",
+            "Daily request quota": "Same opponent once per day",
+        },
     ])
     st.dataframe(
         sop.set_index("XP event").rename_axis("XP event"),
@@ -3024,7 +3030,8 @@ def render_xp_streak_sop() -> None:
     )
     st.caption(
         "In Special modes, unselected classes cannot submit XP requests, "
-        "attempt XP quizzes, receive manual XP or receive approved-request XP."
+        "attempt XP quizzes or battles, receive manual XP or receive "
+        "approved-request XP."
     )
     st.subheader("STREAK SOP")
     streak_sop = pd.DataFrame([
@@ -5748,6 +5755,413 @@ def render_quiz_question_reporting(
                         st.error(f"Question report could not be submitted: {exc}")
 
 
+def battle_student_directory() -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Return battle labels and identity details keyed by app-user UUID."""
+    users, _ = fetch_table("app_users", pd.DataFrame())
+    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+    labels: dict[str, str] = {}
+    details: dict[str, dict[str, str]] = {}
+    if users.empty:
+        return labels, details
+    student_users = users[
+        users.get("role", pd.Series(index=users.index, dtype=str))
+        .astype(str).str.lower().eq("student")
+    ].copy()
+    if "active" in student_users.columns:
+        student_users = student_users[student_users["active"].fillna(False)]
+    backgrounds: dict[str, dict[str, Any]] = {}
+    if not background.empty and "NO MATRIK" in background.columns:
+        backgrounds = {
+            str(row["NO MATRIK"]): row.to_dict()
+            for _, row in background.iterrows()
+        }
+    for _, row in student_users.iterrows():
+        user_id = str(row.get("id"))
+        matric = str(row.get("NO MATRIK") or "—")
+        profile = backgrounds.get(matric, {})
+        nickname = str(
+            profile.get("NICKNAME PELAJAR")
+            or profile.get("NAMA PELAJAR")
+            or row.get("full_name")
+            or row.get("username")
+            or "Student"
+        ).upper()
+        student_class = str(profile.get("KELAS") or "—").upper()
+        labels[user_id] = f"{nickname} · {student_class}"
+        details[user_id] = {
+            "name": nickname, "class": student_class, "matric": matric,
+        }
+    return labels, details
+
+
+def battle_result_panel(
+    battle: dict[str, Any],
+    question: dict[str, Any],
+    answers: list[dict[str, Any]],
+    labels: dict[str, str],
+) -> None:
+    """Show the authoritative result of one completed battle question."""
+    options = question.get("options") or []
+    if isinstance(options, str):
+        try:
+            options = json.loads(options)
+        except json.JSONDecodeError:
+            options = []
+    correct_index = int(question.get("correct_index", 0))
+    correct_text = options[correct_index] if correct_index < len(options) else "—"
+    st.markdown(f"**Correct answer:** {chr(65 + correct_index)}. {correct_text}")
+    st.markdown(f"**Explanation:** {question.get('explanation') or '—'}")
+    answer_map = {str(row.get("student_user_id")): row for row in answers}
+    result_rows = []
+    for player_key in ("player_a_id", "player_b_id"):
+        player_id = str(battle.get(player_key))
+        answer = answer_map.get(player_id, {})
+        selected = answer.get("selected_index")
+        selected_label = (
+            "TIMEOUT" if selected is None
+            else chr(65 + int(selected))
+        )
+        result_rows.append({
+            "Student": labels.get(player_id, player_id),
+            "Answer": selected_label,
+            "Correct": "YES" if answer.get("is_correct") else "NO",
+            "Time": f"{int(answer.get('time_taken_ms') or 60000) / 1000:.3f}s",
+        })
+    st.dataframe(pd.DataFrame(result_rows), hide_index=True, width="stretch")
+    outcome = str(question.get("outcome") or "draw")
+    if outcome == "draw":
+        st.info("QUESTION RESULT · DRAW")
+    else:
+        winner_id = str(question.get("winner_id"))
+        st.success(f"QUESTION WINNER · {labels.get(winner_id, winner_id)}")
+
+
+@st.fragment(run_every="4s")
+def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None:
+    """Live Supabase-backed presence, challenge and battle interface."""
+    if is_demo():
+        st.info("Battle requires the live Supabase database.")
+        return
+    client = db()
+    user_id = str(user.get("id"))
+    preview = is_admin_student_preview()
+    if not preview:
+        last_heartbeat = st.session_state.get("battle_last_heartbeat")
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        if (
+            not isinstance(last_heartbeat, datetime)
+            or (now_utc - last_heartbeat).total_seconds() >= 20
+        ):
+            try:
+                client.rpc("battle_heartbeat", {
+                    "p_student_user_id": user_id,
+                }).execute()
+                st.session_state.battle_last_heartbeat = now_utc
+            except Exception as exc:
+                st.error(
+                    "Battle is not configured. Run "
+                    f"supabase_migration_024_student_battles.sql. Details: {exc}"
+                )
+                return
+    try:
+        presence = client.table("battle_presence").select("*").execute().data or []
+        challenges = client.table("battle_challenges").select("*").or_(
+            f"challenger_id.eq.{user_id},opponent_id.eq.{user_id}"
+        ).order("created_at", desc=True).limit(100).execute().data or []
+        matches = client.table("battle_matches").select("*").or_(
+            f"player_a_id.eq.{user_id},player_b_id.eq.{user_id}"
+        ).order("started_at", desc=True).limit(50).execute().data or []
+    except Exception as exc:
+        st.error(f"Battle data could not be loaded: {exc}")
+        return
+
+    labels, details = battle_student_directory()
+    active_matches = [row for row in matches if row.get("status") == "active"]
+    active_match = active_matches[0] if active_matches else None
+    lobby_tab, history_tab, instructions_tab = st.tabs(
+        ["BATTLE LOBBY", "MATCH HISTORY", "GAME INSTRUCTIONS"]
+    )
+
+    with lobby_tab:
+        if not mode_status["allowed"]:
+            st.warning(
+                "Your class is blocked from XP activities today. Battle is locked "
+                "and your streak remains paused."
+            )
+            return
+        if active_match:
+            battle_id = str(active_match["id"])
+            opponent_id = (
+                str(active_match["player_b_id"])
+                if str(active_match["player_a_id"]) == user_id
+                else str(active_match["player_a_id"])
+            )
+            st.subheader(f"BATTLE VS {labels.get(opponent_id, opponent_id)}")
+            score_a, score_b = st.columns(2)
+            score_a.metric(
+                labels.get(str(active_match["player_a_id"]), "PLAYER A"),
+                int(active_match.get("player_a_wins") or 0),
+            )
+            score_b.metric(
+                labels.get(str(active_match["player_b_id"]), "PLAYER B"),
+                int(active_match.get("player_b_wins") or 0),
+            )
+            try:
+                questions = client.table("battle_questions").select("*").eq(
+                    "battle_id", battle_id
+                ).order("position").execute().data or []
+                all_answers = client.table("battle_answers").select("*").eq(
+                    "battle_id", battle_id
+                ).execute().data or []
+            except Exception as exc:
+                st.error(f"Battle round could not be loaded: {exc}")
+                return
+            current_position = int(active_match.get("current_question") or 1)
+            previous_position = current_position - 1
+            acknowledged_key = f"battle_ack_{battle_id}"
+            acknowledged = int(st.session_state.get(acknowledged_key, 0))
+            previous = next(
+                (q for q in questions if int(q["position"]) == previous_position), None
+            )
+            if previous and previous.get("outcome") and acknowledged < previous_position:
+                st.subheader(f"QUESTION {previous_position} RESULT")
+                battle_result_panel(
+                    active_match, previous,
+                    [a for a in all_answers if int(a["position"]) == previous_position],
+                    labels,
+                )
+                if st.button("CONTINUE TO NEXT QUESTION", type="primary"):
+                    st.session_state[acknowledged_key] = previous_position
+                    st.rerun()
+                return
+            current = next(
+                (q for q in questions if int(q["position"]) == current_position), None
+            )
+            if not current:
+                st.info("Preparing the next question…")
+                return
+            opened_at = pd.to_datetime(current.get("opened_at"), utc=True)
+            elapsed = max(0.0, (pd.Timestamp.now(tz="UTC") - opened_at).total_seconds())
+            remaining = max(0, 60 - int(elapsed))
+            st.progress(min(1.0, elapsed / 60), text=f"{remaining} seconds remaining")
+            st.markdown(f"### {current_position}. {current.get('question', '')}")
+            options = current.get("options") or []
+            if isinstance(options, str):
+                try:
+                    options = json.loads(options)
+                except json.JSONDecodeError:
+                    options = []
+            own_answer = next((
+                row for row in all_answers
+                if int(row["position"]) == current_position
+                and str(row["student_user_id"]) == user_id
+            ), None)
+            if own_answer:
+                st.info("Answer submitted. Waiting for your opponent…")
+                if remaining == 0 and not preview:
+                    try:
+                        client.rpc("submit_battle_answer", {
+                            "p_battle_id": battle_id,
+                            "p_student_user_id": user_id,
+                            "p_position": current_position,
+                            "p_selected_index": own_answer.get("selected_index"),
+                        }).execute()
+                    except Exception:
+                        pass
+                return
+            selected = st.radio(
+                "Choose your answer",
+                range(len(options)),
+                format_func=lambda index: f"{chr(65 + index)}. {options[index]}",
+                index=None,
+                key=f"battle_answer_{battle_id}_{current_position}",
+                disabled=remaining == 0 or preview,
+            )
+            if remaining == 0 and not preview:
+                try:
+                    client.rpc("submit_battle_answer", {
+                        "p_battle_id": battle_id,
+                        "p_student_user_id": user_id,
+                        "p_position": current_position,
+                        "p_selected_index": None,
+                    }).execute()
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Timeout could not be recorded: {exc}")
+            elif st.button(
+                "SUBMIT ANSWER", type="primary", disabled=selected is None or preview
+            ):
+                try:
+                    client.rpc("submit_battle_answer", {
+                        "p_battle_id": battle_id,
+                        "p_student_user_id": user_id,
+                        "p_position": current_position,
+                        "p_selected_index": int(selected),
+                    }).execute()
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Answer could not be submitted: {exc}")
+            return
+
+        latest_completed = next(
+            (row for row in matches if row.get("status") == "completed"), None
+        )
+        if latest_completed:
+            is_a = str(latest_completed["player_a_id"]) == user_id
+            opponent_id = str(
+                latest_completed["player_b_id"] if is_a
+                else latest_completed["player_a_id"]
+            )
+            winner_id = str(latest_completed.get("winner_id") or "")
+            result = (
+                "DRAW" if not winner_id else
+                ("WIN" if winner_id == user_id else "LOSS")
+            )
+            earned_xp = int(
+                latest_completed.get("player_a_xp" if is_a else "player_b_xp") or 0
+            )
+            with st.container(border=True):
+                st.subheader("LATEST MATCH RESULT")
+                st.markdown(
+                    f"**{result}** vs {labels.get(opponent_id, opponent_id)} · "
+                    f"{int(latest_completed.get('player_a_wins') or 0)}–"
+                    f"{int(latest_completed.get('player_b_wins') or 0)} · "
+                    f"**{earned_xp} XP**"
+                )
+                if earned_xp == 0:
+                    st.caption(
+                        "No XP was awarded because all 10 questions were not answered."
+                    )
+                with st.expander("VIEW FINAL QUESTION RESULT"):
+                    try:
+                        final_question_rows = client.table(
+                            "battle_questions"
+                        ).select("*").eq(
+                            "battle_id", str(latest_completed["id"])
+                        ).eq("position", 10).execute().data or []
+                        final_answers = client.table("battle_answers").select(
+                            "*"
+                        ).eq("battle_id", str(latest_completed["id"])).eq(
+                            "position", 10
+                        ).execute().data or []
+                        if final_question_rows:
+                            battle_result_panel(
+                                latest_completed, final_question_rows[0],
+                                final_answers, labels,
+                            )
+                    except Exception as exc:
+                        st.warning(f"Final question result is unavailable: {exc}")
+
+        received = [
+            row for row in challenges
+            if str(row.get("opponent_id")) == user_id and row.get("status") == "pending"
+        ]
+        if received:
+            st.subheader("CHALLENGES RECEIVED")
+            for challenge in received:
+                challenger_id = str(challenge["challenger_id"])
+                with st.container(border=True, horizontal=True):
+                    st.markdown(f"**{labels.get(challenger_id, challenger_id)}**")
+                    if st.button("ACCEPT", key=f"accept_{challenge['id']}", disabled=preview):
+                        try:
+                            client.rpc("respond_battle_challenge", {
+                                "p_challenge_id": str(challenge["id"]),
+                                "p_opponent_id": user_id,
+                                "p_accept": True,
+                            }).execute()
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Challenge could not be accepted: {exc}")
+                    if st.button("REJECT", key=f"reject_{challenge['id']}", disabled=preview):
+                        client.rpc("respond_battle_challenge", {
+                            "p_challenge_id": str(challenge["id"]),
+                            "p_opponent_id": user_id,
+                            "p_accept": False,
+                        }).execute()
+                        st.rerun()
+
+        online_cutoff = datetime.now(ZoneInfo("UTC")) - timedelta(seconds=90)
+        online_ids = {
+            str(row.get("student_user_id"))
+            for row in presence
+            if pd.to_datetime(row.get("last_seen_at"), utc=True).to_pydatetime()
+            >= online_cutoff
+            and str(row.get("student_user_id")) != user_id
+        }
+        st.subheader("ONLINE STUDENTS")
+        if not online_ids:
+            st.info("No other students are online in Battle right now.")
+        else:
+            opponent = st.selectbox(
+                "Choose an opponent",
+                sorted(online_ids, key=lambda value: labels.get(value, value)),
+                format_func=lambda value: f"ONLINE · {labels.get(value, value)}",
+            )
+            if st.button("SEND CHALLENGE", type="primary", disabled=preview):
+                try:
+                    client.rpc("send_battle_challenge", {
+                        "p_challenger_id": user_id,
+                        "p_opponent_id": opponent,
+                    }).execute()
+                    st.success("Challenge sent.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Challenge could not be sent: {exc}")
+        outgoing = [
+            row for row in challenges
+            if str(row.get("challenger_id")) == user_id and row.get("status") == "pending"
+        ]
+        if outgoing:
+            st.caption(
+                "WAITING FOR · " + ", ".join(
+                    labels.get(str(row["opponent_id"]), str(row["opponent_id"]))
+                    for row in outgoing
+                )
+            )
+
+    with history_tab:
+        completed = [row for row in matches if row.get("status") == "completed"]
+        if not completed:
+            st.info("No completed battles yet.")
+        else:
+            rows = []
+            for match in completed:
+                is_a = str(match["player_a_id"]) == user_id
+                opponent_id = str(match["player_b_id"] if is_a else match["player_a_id"])
+                winner_id = str(match.get("winner_id") or "")
+                result = "DRAW" if not winner_id else ("WIN" if winner_id == user_id else "LOSS")
+                rows.append({
+                    "Opponent": labels.get(opponent_id, opponent_id),
+                    "Result": result,
+                    "Score": (
+                        f"{int(match.get('player_a_wins') or 0)}–"
+                        f"{int(match.get('player_b_wins') or 0)}"
+                    ),
+                    "XP": int(
+                        match.get("player_a_xp" if is_a else "player_b_xp") or 0
+                    ),
+                    "Completed": match.get("completed_at"),
+                })
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    with instructions_tab:
+        st.markdown(
+            "- Challenge an online student. The same pair may battle only once per day.\n"
+            "- Each battle has **10 random published questions: 7 easy and 3 medium**.\n"
+            "- Both players have **1 minute per question** and must complete all 10.\n"
+            "- One correct answer wins. If both are correct, the fastest wins. If "
+            "both are wrong or correct at exactly the same time, the question is a draw.\n"
+            "- The most question wins takes the battle. A completed loss earns **5 XP**, "
+            "a draw **8 XP**, and a win **10 XP**. Extra Special mode doubles these awards."
+        )
+
+
+def battle_page() -> None:
+    heading("", "Battle")
+    user = current_user()
+    battle_live_panel(user, xp_mode_status(user))
+
+
 def quiz_page() -> None:
     heading(
         "Daily knowledge check",
@@ -7935,6 +8349,7 @@ def main() -> None:
             "Results": progress_page,
             "Materials": materials_page,
             "Quiz": quiz_page,
+            "Battle": battle_page,
             "XP: Journey": my_xp_page,
             "XP: SOP": lambda: sop_page("XP: SOP"),
             "Leaderboard 1": student_leaderboard_one_page,
