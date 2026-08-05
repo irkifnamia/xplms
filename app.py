@@ -257,7 +257,27 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   box-shadow:0 4px 14px rgba(23,35,58,.055);
   backdrop-filter:blur(5px);
 }
-.hero-brand img { display:block; width:54px; height:54px; object-fit:contain; margin:0 auto 2px; }
+.hero-brand-top { display:flex; align-items:center; justify-content:center; gap:7px; }
+.hero-brand img { display:block; width:54px; height:54px; object-fit:contain; margin:0; }
+.hero-mode {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:24px;
+  padding:4px 7px;
+  border:1px solid #b9c9df;
+  border-radius:999px;
+  background:#edf4ff;
+  color:#174f96;
+  font-size:.52rem;
+  font-weight:900;
+  line-height:1.05;
+  letter-spacing:.055em;
+  white-space:nowrap;
+}
+.hero-mode.special { background:#ecf9f1; border-color:#a8dac0; color:#17653b; }
+.hero-mode.extra-special { background:#fff4d7; border-color:#e5c468; color:#765000; }
+.hero-mode.paused { background:#fff0f0; border-color:#e5abab; color:#9b2525; }
 .hero-identity {
   color:#40516a;
   font-size:.65rem;
@@ -633,6 +653,8 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
   .hero-inner { gap:10px; }
   .hero-brand { min-width:78px; padding:5px 7px 4px; border-radius:11px; }
   .hero-brand img { width:46px; height:46px; }
+  .hero-brand-top { gap:5px; }
+  .hero-mode { min-height:21px; padding:3px 6px; font-size:.46rem; }
   .hero-identity { font-size:.58rem; max-width:110px; overflow:hidden; text-overflow:ellipsis; }
   body:has(.student-sidebar-marker) .hero p {
     font-size:.88rem;
@@ -1459,11 +1481,19 @@ def polish_chart(fig: Any) -> Any:
 
 def heading(eyebrow: str, title: str, copy: str = "") -> None:
     identity = html.escape(str(st.session_state.get("header_identity", "")))
+    mode = html.escape(str(st.session_state.get("header_mode", "")))
+    mode_class = html.escape(
+        str(st.session_state.get("header_mode_class", "")), quote=True
+    )
+    mode_badge = (
+        f'<span class="hero-mode {mode_class}">{mode}</span>' if mode else ""
+    )
     st.markdown(
         f'<div class="hero"><div class="hero-inner">'
         f'<div class="hero-title"><h1>{html.escape(title.upper())}</h1></div>'
-        f'<div class="hero-brand"><img src="data:image/png;base64,{LOGO_DATA}" '
-        f'alt="XPLMS"><div class="hero-identity">{identity}</div></div>'
+        f'<div class="hero-brand"><div class="hero-brand-top">'
+        f'<img src="data:image/png;base64,{LOGO_DATA}" alt="XPLMS">{mode_badge}'
+        f'</div><div class="hero-identity">{identity}</div></div>'
         f'</div></div>',
         unsafe_allow_html=True,
     )
@@ -7828,6 +7858,20 @@ def main() -> None:
         st.session_state.header_identity = (
             f"{user.get('name', 'USER')} | {user.get('role', 'USER')}"
         ).upper()
+        if user.get("role") == "Student":
+            password_mode = xp_mode_status(user)
+            st.session_state.header_mode = (
+                f"{password_mode['label']} MODE"
+                + (" · 2×" if password_mode["allowed"] and password_mode["multiplier"] == 2 else "")
+                + (" · PAUSED" if not password_mode["allowed"] else "")
+            )
+            st.session_state.header_mode_class = (
+                "paused" if not password_mode["allowed"]
+                else str(password_mode["mode"]).replace("_", "-")
+            )
+        else:
+            st.session_state.header_mode = ""
+            st.session_state.header_mode_class = ""
         change_password_page()
         return
     actual_role = user.get("role", "Student")
@@ -7858,9 +7902,25 @@ def main() -> None:
         st.session_state.header_identity = (
             f"{display_name} | {student_class} | {xp_team}"
         ).upper()
+        student_mode_status = xp_mode_status(effective_user)
+        if student_mode_status["allowed"]:
+            st.session_state.header_mode = f"{student_mode_status['label']} MODE"
+            if student_mode_status["multiplier"] == 2:
+                st.session_state.header_mode += " · 2×"
+        else:
+            st.session_state.header_mode = (
+                f"{student_mode_status['label']} MODE · PAUSED"
+            )
+        st.session_state.header_mode_class = (
+            "paused"
+            if not student_mode_status["allowed"]
+            else str(student_mode_status["mode"]).replace("_", "-")
+        )
     else:
         display_name = user["name"]
         st.session_state.header_identity = f"{display_name} | ADMIN".upper()
+        st.session_state.header_mode = ""
+        st.session_state.header_mode_class = ""
     page = sidebar(role, display_name)
     page = mobile_navigation(role, page)
     if role == "Student":
@@ -7872,7 +7932,7 @@ def main() -> None:
                 f"{preview_user.get('no_matrik', '—')} · "
                 "Read-only: all submissions and changes are discarded."
             )
-        render_student_xp_mode_banner(xp_mode_status(current_user()))
+        render_student_xp_mode_banner(student_mode_status)
         {
             "Results": progress_page,
             "Materials": materials_page,
