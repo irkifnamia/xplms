@@ -5836,7 +5836,7 @@ def battle_result_panel(
         st.success(f"QUESTION WINNER · {labels.get(winner_id, winner_id)}")
 
 
-@st.fragment(run_every="8s")
+@st.fragment(run_every="15s")
 def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None:
     """Live Supabase-backed presence, challenge and battle interface."""
     if is_demo():
@@ -5864,10 +5864,6 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                 )
                 return
     try:
-        presence = client.table("battle_presence").select("*").execute().data or []
-        challenges = client.table("battle_challenges").select("*").or_(
-            f"challenger_id.eq.{user_id},opponent_id.eq.{user_id}"
-        ).order("created_at", desc=True).limit(100).execute().data or []
         matches = client.table("battle_matches").select("*").or_(
             f"player_a_id.eq.{user_id},player_b_id.eq.{user_id}"
         ).order("started_at", desc=True).limit(50).execute().data or []
@@ -5878,11 +5874,29 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
     labels, details = battle_student_directory()
     active_matches = [row for row in matches if row.get("status") == "active"]
     active_match = active_matches[0] if active_matches else None
+    presence: list[dict[str, Any]] = []
+    challenges: list[dict[str, Any]] = []
+    if active_match is None:
+        try:
+            presence = client.table("battle_presence").select(
+                "student_user_id,last_seen_at"
+            ).gte(
+                "last_seen_at",
+                (datetime.now(ZoneInfo("UTC")) - timedelta(seconds=90)).isoformat(),
+            ).execute().data or []
+            challenges = client.table("battle_challenges").select("*").or_(
+                f"challenger_id.eq.{user_id},opponent_id.eq.{user_id}"
+            ).order("created_at", desc=True).limit(50).execute().data or []
+        except Exception as exc:
+            st.error(f"Battle lobby could not be loaded: {exc}")
+            return
     lobby_tab, history_tab, instructions_tab = st.tabs(
         ["BATTLE LOBBY", "MATCH HISTORY", "GAME INSTRUCTIONS"]
     )
 
     with lobby_tab:
+        if st.button("REFRESH BATTLE STATUS", key="refresh_battle_status"):
+            st.rerun()
         if not mode_status["allowed"]:
             st.warning(
                 "Your class is blocked from XP activities today. Battle is locked "
