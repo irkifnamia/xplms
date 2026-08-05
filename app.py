@@ -20,6 +20,7 @@ import bcrypt
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -83,6 +84,10 @@ BADGE_IMAGE_DATA = {
 LOGIN_BADGE_IMAGE_DATA = BADGE_IMAGE_DATA
 LOGO_IMAGE = Image.open(LOGO_PATH)
 LOGO_DATA = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+BATTLE_REALTIME_COMPONENT = components.declare_component(
+    "xplms_battle_realtime",
+    path=str(Path(__file__).parent / "battle_realtime_component"),
+)
 
 st.set_page_config(
     page_title="XPLMS",
@@ -5836,7 +5841,40 @@ def battle_result_panel(
         st.success(f"QUESTION WINNER · {labels.get(winner_id, winner_id)}")
 
 
-@st.fragment(run_every="15s")
+def render_battle_realtime_listener(
+    client: Any,
+    user_id: str,
+    deadline: str | None = None,
+) -> bool:
+    """Mount the private-key-free browser listener; return False on fallback."""
+    try:
+        channel_key = st.session_state.get("battle_realtime_channel_key")
+        if not channel_key:
+            response = client.rpc("ensure_battle_realtime_channel", {
+                "p_student_user_id": user_id,
+            }).execute()
+            channel_key = str(response.data or "")
+            if not channel_key:
+                return False
+            st.session_state.battle_realtime_channel_key = channel_key
+        publishable_key = st.secrets.get("SUPABASE_KEY", "")
+        supabase_url = st.secrets.get("SUPABASE_URL", "")
+        if not publishable_key or not supabase_url:
+            return False
+        BATTLE_REALTIME_COMPONENT(
+            supabase_url=str(supabase_url),
+            api_key=str(publishable_key),
+            channel_key=str(channel_key),
+            deadline=deadline or "",
+            key="battle_realtime_listener",
+            default=None,
+        )
+        return True
+    except Exception:
+        return False
+
+
+@st.fragment(run_every="60s")
 def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None:
     """Live Supabase-backed presence, challenge and battle interface."""
     if is_demo():
@@ -5874,6 +5912,31 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
     labels, details = battle_student_directory()
     active_matches = [row for row in matches if row.get("status") == "active"]
     active_match = active_matches[0] if active_matches else None
+    realtime_deadline: str | None = None
+    if active_match:
+        try:
+            active_question_rows = client.table("battle_questions").select(
+                "opened_at,outcome"
+            ).eq("battle_id", str(active_match["id"])).eq(
+                "position", int(active_match.get("current_question") or 1)
+            ).limit(1).execute().data or []
+            if (
+                active_question_rows
+                and active_question_rows[0].get("opened_at")
+                and not active_question_rows[0].get("outcome")
+            ):
+                opened = pd.to_datetime(
+                    active_question_rows[0]["opened_at"], utc=True
+                )
+                realtime_deadline = (
+                    opened + pd.Timedelta(seconds=60)
+                ).isoformat()
+        except Exception:
+            pass
+    realtime_active = (
+        False if preview
+        else render_battle_realtime_listener(client, user_id, realtime_deadline)
+    )
     presence: list[dict[str, Any]] = []
     challenges: list[dict[str, Any]] = []
     if active_match is None:
@@ -5895,6 +5958,11 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
     )
 
     with lobby_tab:
+        st.caption(
+            "LIVE CONNECTION · REALTIME"
+            if realtime_active else
+            "LIVE CONNECTION · FALLBACK REFRESH"
+        )
         if st.button("REFRESH BATTLE STATUS", key="refresh_battle_status"):
             st.rerun()
         if not mode_status["allowed"]:

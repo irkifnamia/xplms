@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body style="margin:0;background:transparent;overflow:hidden">
+<script>
+let channel = null;
+let signature = "";
+let sequence = 0;
+let deadlineTimer = null;
+let eventTimer = null;
+
+function post(type, payload = {}) {
+  window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
+}
+function emit(kind) {
+  if (eventTimer) clearTimeout(eventTimer);
+  eventTimer = setTimeout(() => {
+    sequence += 1;
+    post("streamlit:setComponentValue", {
+      value: {sequence, kind, at: new Date().toISOString()}
+    });
+  }, kind === "deadline" ? 20 : 350);
+}
+async function configure(args) {
+  const nextSignature = JSON.stringify([
+    args.supabase_url, args.api_key, args.channel_key, args.deadline || ""
+  ]);
+  if (nextSignature === signature) return;
+  signature = nextSignature;
+  if (deadlineTimer) clearTimeout(deadlineTimer);
+  if (channel) await channel.unsubscribe();
+  if (!args.supabase_url || !args.api_key || !args.channel_key) return;
+  const client = window.supabase.createClient(args.supabase_url, args.api_key, {
+    auth: {persistSession: false, autoRefreshToken: false}
+  });
+  channel = client.channel(`xplms-battle-${args.channel_key}`)
+    .on("postgres_changes", {
+      event: "INSERT", schema: "public", table: "battle_realtime_events",
+      filter: `channel_key=eq.${args.channel_key}`
+    }, () => emit("realtime"))
+    .subscribe();
+  if (args.deadline) {
+    const delay = Math.max(0, new Date(args.deadline).getTime() - Date.now());
+    deadlineTimer = setTimeout(() => emit("deadline"), delay + 150);
+  }
+}
+window.addEventListener("message", event => {
+  if (event.data && event.data.type === "streamlit:render") {
+    configure(event.data.args || {});
+    post("streamlit:setFrameHeight", {height: 0});
+  }
+});
+post("streamlit:componentReady", {apiVersion: 1});
+post("streamlit:setFrameHeight", {height: 0});
+</script>
+</body>
+</html>
