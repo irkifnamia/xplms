@@ -5836,7 +5836,7 @@ def battle_result_panel(
         st.success(f"QUESTION WINNER · {labels.get(winner_id, winner_id)}")
 
 
-@st.fragment(run_every="4s")
+@st.fragment(run_every="8s")
 def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None:
     """Live Supabase-backed presence, challenge and battle interface."""
     if is_demo():
@@ -5913,30 +5913,51 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                 all_answers = client.table("battle_answers").select("*").eq(
                     "battle_id", battle_id
                 ).execute().data or []
+                ready_rows = client.table("battle_round_ready").select("*").eq(
+                    "battle_id", battle_id
+                ).execute().data or []
             except Exception as exc:
-                st.error(f"Battle round could not be loaded: {exc}")
+                st.error(
+                    "Battle round could not be loaded. Run "
+                    f"supabase_migration_025_battle_ready_gate.sql. Details: {exc}"
+                )
                 return
             current_position = int(active_match.get("current_question") or 1)
-            previous_position = current_position - 1
-            acknowledged_key = f"battle_ack_{battle_id}"
-            acknowledged = int(st.session_state.get(acknowledged_key, 0))
-            previous = next(
-                (q for q in questions if int(q["position"]) == previous_position), None
-            )
-            if previous and previous.get("outcome") and acknowledged < previous_position:
-                st.subheader(f"QUESTION {previous_position} RESULT")
-                battle_result_panel(
-                    active_match, previous,
-                    [a for a in all_answers if int(a["position"]) == previous_position],
-                    labels,
-                )
-                if st.button("CONTINUE TO NEXT QUESTION", type="primary"):
-                    st.session_state[acknowledged_key] = previous_position
-                    st.rerun()
-                return
             current = next(
                 (q for q in questions if int(q["position"]) == current_position), None
             )
+            if current and current.get("outcome"):
+                st.subheader(f"QUESTION {current_position} RESULT")
+                battle_result_panel(
+                    active_match, current,
+                    [a for a in all_answers if int(a["position"]) == current_position],
+                    labels,
+                )
+                ready_ids = {
+                    str(row.get("student_user_id"))
+                    for row in ready_rows
+                    if int(row.get("position") or 0) == current_position
+                }
+                if user_id in ready_ids:
+                    st.info(
+                        "YOU ARE READY · Waiting for your opponent. The next "
+                        "countdown has not started."
+                    )
+                elif st.button(
+                    "READY FOR NEXT QUESTION", type="primary", disabled=preview
+                ):
+                    try:
+                        client.rpc("ready_for_next_battle_question", {
+                            "p_battle_id": battle_id,
+                            "p_student_user_id": user_id,
+                            "p_position": current_position,
+                        }).execute()
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Ready status could not be saved: {exc}")
+                if ready_ids:
+                    st.caption(f"{len(ready_ids)} OF 2 PLAYERS READY")
+                return
             if not current:
                 st.info("Preparing the next question…")
                 return
@@ -6149,6 +6170,8 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
             "- Challenge an online student. The same pair may battle only once per day.\n"
             "- Each battle has **10 random published questions: 7 easy and 3 medium**.\n"
             "- Both players have **1 minute per question** and must complete all 10.\n"
+            "- After each result, both players must press **Ready for next question**. "
+            "The next shared one-minute countdown starts only when both are ready.\n"
             "- One correct answer wins. If both are correct, the fastest wins. If "
             "both are wrong or correct at exactly the same time, the question is a draw.\n"
             "- The most question wins takes the battle. A completed loss earns **5 XP**, "
