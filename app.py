@@ -2055,7 +2055,7 @@ BADGE_LEVELS = [
     (200, "Rookie"),
     (500, "Explorer"),
     (1000, "Expert"),
-    (1500, "Legend"),
+    (2000, "Legend"),
 ]
 STREAK_BADGE_LEVELS = [
     (7, "Rookie"),
