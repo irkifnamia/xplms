@@ -5803,9 +5803,16 @@ def render_quiz_question_reporting(
                                 or "application/octet-stream",
                             )
                             if not uploaded:
+                                upload_error = str(upload_result)
+                                if "bucket not found" in upload_error.lower():
+                                    raise RuntimeError(
+                                        "Supporting-document storage is not configured. "
+                                        "Ask the administrator to run "
+                                        "supabase_migration_030_quiz_report_storage.sql."
+                                    )
                                 raise RuntimeError(
                                     "Supporting document upload failed: "
-                                    f"{upload_result}"
+                                    f"{upload_error}"
                                 )
                         snapshot = {
                             "id": question_id,
