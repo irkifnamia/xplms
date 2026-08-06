@@ -2960,7 +2960,7 @@ def admin_xp_mode_page() -> None:
         "special": "SPECIAL",
         "extra_special": "EXTRA SPECIAL",
     }
-    with st.form(f"xp_mode_form_{selected_date.isoformat()}"):
+    with st.container(border=True):
         mode = st.radio(
             "XP mode",
             list(mode_labels),
@@ -2992,7 +2992,11 @@ def admin_xp_mode_page() -> None:
                 "Selected classes receive double XP for every new event. "
                 "All other classes are locked."
             )
-        if st.form_submit_button("Save XP mode", type="primary"):
+        if st.button(
+            "Save XP mode",
+            type="primary",
+            key=f"save_xp_mode_{selected_date.isoformat()}",
+        ):
             if mode != "normal" and not selected_classes:
                 st.error("Select at least one class for a Special mode.")
             elif not live:
