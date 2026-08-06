@@ -3096,6 +3096,16 @@ def render_xp_streak_sop() -> None:
             "Daily requirement": "At least 1 request approved by Admin",
             "Streak date": "Original request date",
         },
+        {
+            "Qualifying activity": "Consultation",
+            "Daily requirement": "At least 1 positive consultation XP event",
+            "Streak date": "Award date / original request date",
+        },
+        {
+            "Qualifying activity": "Battle",
+            "Daily requirement": "Complete at least 1 Battle and receive Battle XP",
+            "Streak date": "Battle completion date",
+        },
     ])
     st.dataframe(
         streak_sop.set_index("Qualifying activity").rename_axis(
@@ -3140,7 +3150,8 @@ def render_badge_sop() -> None:
         "XP and Streak badges are captured permanently when their threshold is "
         "first reached. Later XP deductions or a streak reset do not remove an "
         "earned badge. A streak day requires either one completed in-app quiz set "
-        "or one approved Extra practice request."
+        "one approved Extra practice request, one positive Consultation XP event, "
+        "or one completed Battle with Battle XP."
     )
 
 
