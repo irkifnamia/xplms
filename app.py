@@ -2967,6 +2967,7 @@ def admin_xp_mode_page() -> None:
             index=list(mode_labels).index(existing_mode),
             format_func=lambda value: mode_labels[value],
             horizontal=True,
+            key=f"admin_xp_mode_value_{selected_date.isoformat()}",
         )
         selected_classes = st.multiselect(
             "Classes allowed to collect XP",
@@ -2978,6 +2979,7 @@ def admin_xp_mode_page() -> None:
                 "Ignored in Normal mode. Special modes lock every class that "
                 "is not selected."
             ),
+            key=f"admin_xp_mode_classes_{selected_date.isoformat()}",
         )
         if mode == "normal":
             st.info("All classes collect XP at the standard value.")
