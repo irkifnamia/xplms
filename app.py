@@ -290,6 +290,35 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   letter-spacing:.045em;
   white-space:nowrap;
 }
+/* Battle arena */
+.st-key-battle_matchup { border:1px solid #c9d8eb; border-radius:18px; padding:14px 18px;
+  background:linear-gradient(120deg,#0d2f5f,#174f96 50%,#0d2f5f); box-shadow:0 10px 24px rgba(13,47,95,.16); }
+.battle-matchup-grid { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
+  align-items:center; gap:14px; color:#fff; text-align:center; }
+.battle-player-name { font-size:.73rem; font-weight:800; letter-spacing:.06em; }
+.battle-player-score { font-size:2rem; line-height:1; font-weight:900; margin-top:5px; }
+.battle-versus { width:42px; height:42px; border-radius:50%; display:grid; place-items:center;
+  background:#fff; color:#174f96; font-size:.75rem; font-weight:900; box-shadow:0 4px 12px rgba(0,0,0,.18); }
+.st-key-battle_question_stage { margin-top:12px; border:1px solid #704b83; border-radius:17px;
+  padding:22px 24px; min-height:118px; display:flex; align-items:center;
+  background:linear-gradient(145deg,#30183f,#512052); box-shadow:0 9px 22px rgba(48,24,63,.16); }
+.st-key-battle_question_stage p,.st-key-battle_question_stage h3 { width:100%; margin:0 !important;
+  text-align:center; color:#fff !important; font-size:1.12rem; line-height:1.55; font-weight:700; }
+.st-key-battle_answer_arena [data-testid="stHorizontalBlock"] { gap:10px; }
+.st-key-battle_answer_arena [data-testid="column"] { min-width:0; }
+.st-key-battle_answer_arena button { width:100%; min-height:178px; padding:18px 13px !important;
+  border:2px solid transparent !important; border-radius:14px !important; color:#fff !important;
+  font-size:1rem !important; font-weight:800 !important; line-height:1.35 !important;
+  white-space:normal !important; box-shadow:0 7px 16px rgba(23,35,58,.14) !important;
+  transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease !important; }
+.st-key-battle_answer_arena [data-testid="column"]:nth-child(1) button { background:#2f76b5 !important; }
+.st-key-battle_answer_arena [data-testid="column"]:nth-child(2) button { background:#25a0a9 !important; }
+.st-key-battle_answer_arena [data-testid="column"]:nth-child(3) button { background:#f2a91f !important; }
+.st-key-battle_answer_arena [data-testid="column"]:nth-child(4) button { background:#d84f70 !important; }
+.st-key-battle_answer_arena button:hover { transform:translateY(-3px); border-color:#fff !important;
+  box-shadow:0 12px 22px rgba(23,35,58,.22) !important; }
+.battle-selected-answer { margin:10px 0 4px; padding:9px 12px; border-radius:10px;
+  background:#e8f2ff; border:1px solid #9fc1eb; color:#123f78; text-align:center; font-weight:800; }
 .hero h1 {
   color:var(--ink);
   margin:0;
@@ -589,6 +618,20 @@ input::placeholder, textarea::placeholder { color:#696965 !important; opacity:1 
 [role="listbox"], [role="option"] { background:#fff !important; }
 
 @media(max-width:700px){
+  .st-key-battle_matchup { padding:12px 10px; border-radius:14px; }
+  .battle-matchup-grid { gap:7px; }
+  .battle-player-name { font-size:.6rem; }
+  .battle-player-score { font-size:1.55rem; }
+  .battle-versus { width:34px; height:34px; font-size:.65rem; }
+  .st-key-battle_question_stage { min-height:100px; padding:17px 14px; }
+  .st-key-battle_question_stage p,.st-key-battle_question_stage h3 { font-size:.95rem; }
+  .st-key-battle_answer_arena [data-testid="stHorizontalBlock"] {
+    display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;
+  }
+  .st-key-battle_answer_arena [data-testid="column"] { width:100% !important; }
+  .st-key-battle_answer_arena button {
+    min-height:132px; padding:12px 9px !important; font-size:.86rem !important;
+  }
   /* Keep Streamlit chrome hidden, but restore the mobile sidebar opener for Admin. */
   [data-testid="stHeader"] {
     display:none !important;
@@ -5982,15 +6025,21 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                 else str(active_match["player_a_id"])
             )
             st.subheader(f"BATTLE VS {labels.get(opponent_id, opponent_id)}")
-            score_a, score_b = st.columns(2)
-            score_a.metric(
-                labels.get(str(active_match["player_a_id"]), "PLAYER A"),
-                int(active_match.get("player_a_wins") or 0),
-            )
-            score_b.metric(
-                labels.get(str(active_match["player_b_id"]), "PLAYER B"),
-                int(active_match.get("player_b_wins") or 0),
-            )
+            with st.container(key="battle_matchup"):
+                st.markdown(
+                    '<div class="battle-matchup-grid">'
+                    '<div><div class="battle-player-name">'
+                    f'{html.escape(labels.get(str(active_match["player_a_id"]), "PLAYER A"))}'
+                    '</div><div class="battle-player-score">'
+                    f'{int(active_match.get("player_a_wins") or 0)}</div></div>'
+                    '<div class="battle-versus">VS</div>'
+                    '<div><div class="battle-player-name">'
+                    f'{html.escape(labels.get(str(active_match["player_b_id"]), "PLAYER B"))}'
+                    '</div><div class="battle-player-score">'
+                    f'{int(active_match.get("player_b_wins") or 0)}</div></div>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
             with st.expander("LEAVE BATTLE"):
                 st.warning(
                     "Leaving normally cancels the battle and both players receive "
@@ -6074,7 +6123,10 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
             elapsed = max(0.0, (pd.Timestamp.now(tz="UTC") - opened_at).total_seconds())
             remaining = max(0, 60 - int(elapsed))
             st.progress(min(1.0, elapsed / 60), text=f"{remaining} seconds remaining")
-            st.markdown(f"### {current_position}. {current.get('question', '')}")
+            with st.container(key="battle_question_stage"):
+                st.markdown(
+                    f"### {current_position}. {current.get('question', '')}"
+                )
             options = current.get("options") or []
             if isinstance(options, str):
                 try:
@@ -6099,14 +6151,27 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                     except Exception:
                         pass
                 return
-            selected = st.radio(
-                "Choose your answer",
-                range(len(options)),
-                format_func=lambda index: f"{chr(65 + index)}. {options[index]}",
-                index=None,
-                key=f"battle_answer_{battle_id}_{current_position}",
-                disabled=remaining == 0 or preview,
-            )
+            selected_key = f"battle_selected_{battle_id}_{current_position}"
+            selected = st.session_state.get(selected_key)
+            with st.container(key="battle_answer_arena"):
+                answer_columns = st.columns(4)
+                for index, option in enumerate(options[:4]):
+                    with answer_columns[index]:
+                        if st.button(
+                            f"{chr(65 + index)}\n\n{option}",
+                            key=f"battle_choice_{battle_id}_{current_position}_{index}",
+                            disabled=remaining == 0 or preview,
+                            use_container_width=True,
+                        ):
+                            st.session_state[selected_key] = index
+                            st.rerun()
+            if selected is not None and 0 <= int(selected) < len(options):
+                st.markdown(
+                    '<div class="battle-selected-answer">SELECTED · '
+                    f'{chr(65 + int(selected))}. {html.escape(str(options[int(selected)]))}'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
             if remaining == 0 and not preview:
                 try:
                     client.rpc("submit_battle_answer", {
