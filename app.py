@@ -319,6 +319,12 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   box-shadow:0 12px 22px rgba(23,35,58,.22) !important; }
 .battle-selected-answer { margin:10px 0 4px; padding:9px 12px; border-radius:10px;
   background:#e8f2ff; border:1px solid #9fc1eb; color:#123f78; text-align:center; font-weight:800; }
+[class*="st-key-leave_battle_"] button { background:#c62828 !important;
+  border-color:#c62828 !important; color:#fff !important; font-weight:800 !important; }
+[class*="st-key-leave_battle_"] button:hover { background:#a71919 !important;
+  border-color:#a71919 !important; }
+[data-testid="stTable"] td,[data-testid="stTable"] th { white-space:normal !important;
+  overflow-wrap:anywhere !important; vertical-align:top !important; }
 .hero h1 {
   color:var(--ink);
   margin:0;
@@ -2129,6 +2135,36 @@ def progress_standings(
     return individual, classes
 
 
+def add_group_rank(
+    frame: pd.DataFrame,
+    xp_column: str,
+    rank_column: str,
+) -> pd.DataFrame:
+    """Rank groups by streak average first, then XP average."""
+    if frame.empty:
+        frame[rank_column] = pd.Series(dtype="int64")
+        return frame
+    ordered = frame.sort_values(
+        ["Streak Average", xp_column],
+        ascending=[False, False],
+        kind="stable",
+    )
+    ranks: dict[Any, int] = {}
+    previous: tuple[float, float] | None = None
+    current_rank = 0
+    for position, (index, row) in enumerate(ordered.iterrows(), start=1):
+        key = (
+            round(float(row["Streak Average"]), 10),
+            round(float(row[xp_column]), 10),
+        )
+        if key != previous:
+            current_rank = position
+            previous = key
+        ranks[index] = current_rank
+    frame[rank_column] = frame.index.map(ranks).astype(int)
+    return frame
+
+
 def leaderboard_data(
     month: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], str]:
@@ -2283,16 +2319,13 @@ def leaderboard_data(
                 "Monthly XP Average": ("Monthly XP", "mean"),
                 "Overall XP Total": ("Overall XP", "sum"),
                 "Overall XP Average": ("Overall XP", "mean"),
+                "Streak Average": ("Current Streak", "mean"),
             },
         )
         .reset_index()
     )
-    classes["Monthly Rank"] = (
-        classes["Monthly XP Average"].rank(method="min", ascending=False).astype(int)
-    )
-    classes["Overall Rank"] = (
-        classes["Overall XP Average"].rank(method="min", ascending=False).astype(int)
-    )
+    classes = add_group_rank(classes, "Monthly XP Average", "Monthly Rank")
+    classes = add_group_rank(classes, "Overall XP Average", "Overall Rank")
     classes["Class Badge"] = classes["Overall XP Average"].map(badge_name_for_xp)
     return individuals, classes, available_months, selected_month
 
@@ -3052,13 +3085,9 @@ def render_xp_streak_sop() -> None:
             "Daily request quota": "Same opponent once per day",
         },
     ])
-    st.dataframe(
-        sop.set_index("XP event").rename_axis("XP event"),
-        hide_index=False,
-        width="stretch",
-    )
+    st.table(sop)
     st.subheader("XP MODE SOP")
-    st.dataframe(
+    st.table(
         pd.DataFrame([
             {
                 "Mode": "Normal",
@@ -3075,9 +3104,7 @@ def render_xp_streak_sop() -> None:
                 "Eligible classes": "Admin-selected classes only",
                 "XP value": "Double (2×) for every new XP event",
             },
-        ]).set_index("Mode"),
-        hide_index=False,
-        width="stretch",
+        ])
     )
     st.caption(
         "In Special modes, unselected classes cannot submit XP requests, "
@@ -3107,13 +3134,7 @@ def render_xp_streak_sop() -> None:
             "Streak date": "Battle completion date",
         },
     ])
-    st.dataframe(
-        streak_sop.set_index("Qualifying activity").rename_axis(
-            "Qualifying activity"
-        ),
-        hide_index=False,
-        width="stretch",
-    )
+    st.table(streak_sop)
     st.markdown(
         "- One qualifying activity is enough to capture the streak day; additional "
         "qualifying activities on the same date do not add extra days.\n"
@@ -3145,11 +3166,11 @@ def render_badge_sop() -> None:
             for threshold, badge in levels
         ]
     )
-    st.dataframe(badges, hide_index=True, width="stretch")
+    st.table(badges)
     st.info(
         "XP and Streak badges are captured permanently when their threshold is "
         "first reached. Later XP deductions or a streak reset do not remove an "
-        "earned badge. A streak day requires either one completed in-app quiz set "
+        "earned badge. A streak day requires either one completed in-app quiz set, "
         "one approved Extra practice request, one positive Consultation XP event, "
         "or one completed Battle with Battle XP."
     )
@@ -3712,6 +3733,7 @@ def _legacy_student_leaderboard_combined_page() -> None:
         else:
             display = xp_classes[[
                 "Monthly Rank", "Overall Rank", "Class", "Students",
+                "Streak Average",
                 "Monthly XP Average", "Monthly XP Total",
                 "Overall XP Average", "Overall XP Total",
             ]].sort_values(["Monthly Rank", "Overall Rank", "Class"])
@@ -3748,6 +3770,7 @@ def _legacy_student_leaderboard_combined_page() -> None:
                     "Monthly XP Total": ("Monthly XP", "sum"),
                     "Overall XP Average": ("Overall XP", "mean"),
                     "Overall XP Total": ("Overall XP", "sum"),
+                    "Streak Average": ("Current Streak", "mean"),
                 },
             )
             .reset_index()
@@ -3758,14 +3781,15 @@ def _legacy_student_leaderboard_combined_page() -> None:
         if teams.empty:
             st.info("XPTEAM leaderboard is not available.")
         else:
-            teams["Monthly Rank"] = teams["Monthly XP Average"].rank(
-                method="min", ascending=False
-            ).astype(int)
-            teams["Overall Rank"] = teams["Overall XP Average"].rank(
-                method="min", ascending=False
-            ).astype(int)
+            teams = add_group_rank(
+                teams, "Monthly XP Average", "Monthly Rank"
+            )
+            teams = add_group_rank(
+                teams, "Overall XP Average", "Overall Rank"
+            )
             display = teams[[
                 "Monthly Rank", "Overall Rank", "XPTEAM", "Students",
+                "Streak Average",
                 "Monthly XP Average", "Monthly XP Total",
                 "Overall XP Average", "Overall XP Total",
             ]].sort_values(["Monthly Rank", "Overall Rank", "XPTEAM"])
@@ -4001,21 +4025,23 @@ def student_leaderboard_one_page() -> None:
                 "Monthly XP Total": ("Monthly XP", "sum"),
                 "Overall XP Average": ("Overall XP", "mean"),
                 "Overall XP Total": ("Overall XP", "sum"),
+                "Streak Average": ("Current Streak", "mean"),
             },
         ).reset_index() if not rows.empty else pd.DataFrame()
         if teams.empty:
             st.info("XPTEAM leaderboard is not available.")
         else:
-            teams["Monthly Rank"] = teams["Monthly XP Average"].rank(
-                method="min", ascending=False
-            ).astype(int)
-            teams["Overall Rank"] = teams["Overall XP Average"].rank(
-                method="min", ascending=False
-            ).astype(int)
+            teams = add_group_rank(
+                teams, "Monthly XP Average", "Monthly Rank"
+            )
+            teams = add_group_rank(
+                teams, "Overall XP Average", "Overall Rank"
+            )
             display = teams[[
                 "XPTEAM", "Monthly Rank", "Overall Rank",
-                "Monthly XP Average", "Overall XP Average",
+                "Streak Average", "Monthly XP Average", "Overall XP Average",
             ]].sort_values(["Monthly Rank", "Overall Rank", "XPTEAM"])
+            display["Streak Average"] = display["Streak Average"].round(2)
             display["Monthly XP Average"] = display[
                 "Monthly XP Average"
             ].round(2)
@@ -4072,13 +4098,14 @@ def student_leaderboard_two_page() -> None:
                 ).fillna(0).astype(int).astype(str)
             for column in [
                 "Monthly XP Average", "Monthly XP Total",
-                "Overall XP Average", "Overall XP Total",
+                "Overall XP Average", "Overall XP Total", "Streak Average",
             ]:
                 formatted[column] = pd.to_numeric(
                     formatted[column], errors="coerce"
                 ).fillna(0).map(lambda value: f"{value:.2f}")
             display = formatted.set_index("Class")[[
                 "Monthly Rank", "Overall Rank", "Students",
+                "Streak Average",
                 "Monthly XP Average", "Monthly XP Total",
                 "Overall XP Average", "Overall XP Total",
             ]].transpose().rename_axis("Metric").reset_index()
@@ -6010,11 +6037,26 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
         except Exception as exc:
             st.error(f"Battle lobby could not be loaded: {exc}")
             return
-    lobby_tab, history_tab, instructions_tab = st.tabs(
-        ["BATTLE LOBBY", "MATCH HISTORY", "GAME INSTRUCTIONS"]
+    active_id = str(active_match.get("id")) if active_match else ""
+    if active_id and st.session_state.get("battle_active_id") != active_id:
+        st.session_state.battle_section = "BATTLE SPACE"
+        st.session_state.battle_active_id = active_id
+    elif not active_id:
+        st.session_state.pop("battle_active_id", None)
+        if st.session_state.get("battle_section") == "BATTLE SPACE":
+            st.session_state.battle_section = "BATTLE LOBBY"
+    if "battle_section" not in st.session_state:
+        st.session_state.battle_section = (
+            "BATTLE SPACE" if active_match else "BATTLE LOBBY"
+        )
+    section = st.segmented_control(
+        "Battle section",
+        ["BATTLE LOBBY", "BATTLE SPACE", "BATTLE HISTORY", "GAME INSTRUCTIONS"],
+        key="battle_section",
+        label_visibility="collapsed",
     )
 
-    with lobby_tab:
+    if section in {"BATTLE LOBBY", "BATTLE SPACE"}:
         st.caption(
             "LIVE CONNECTION · REALTIME"
             if realtime_active else
@@ -6028,7 +6070,13 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                 "and your streak remains paused."
             )
             return
-        if active_match:
+        if section == "BATTLE SPACE" and not active_match:
+            st.info(
+                "No battle is active. Open BATTLE LOBBY to challenge a student "
+                "or accept a challenge."
+            )
+            return
+        if section == "BATTLE SPACE" and active_match:
             battle_id = str(active_match["id"])
             opponent_id = (
                 str(active_match["player_b_id"])
@@ -6162,8 +6210,6 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                     except Exception:
                         pass
                 return
-            selected_key = f"battle_selected_{battle_id}_{current_position}"
-            selected = st.session_state.get(selected_key)
             with st.container(key="battle_answer_arena"):
                 answer_columns = st.columns(4)
                 for index, option in enumerate(options[:4]):
@@ -6174,15 +6220,16 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                             disabled=remaining == 0 or preview,
                             use_container_width=True,
                         ):
-                            st.session_state[selected_key] = index
-                            st.rerun()
-            if selected is not None and 0 <= int(selected) < len(options):
-                st.markdown(
-                    '<div class="battle-selected-answer">SELECTED · '
-                    f'{chr(65 + int(selected))}. {html.escape(str(options[int(selected)]))}'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
+                            try:
+                                client.rpc("submit_battle_answer", {
+                                    "p_battle_id": battle_id,
+                                    "p_student_user_id": user_id,
+                                    "p_position": current_position,
+                                    "p_selected_index": index,
+                                }).execute()
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Answer could not be submitted: {exc}")
             if remaining == 0 and not preview:
                 try:
                     client.rpc("submit_battle_answer", {
@@ -6194,19 +6241,12 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Timeout could not be recorded: {exc}")
-            elif st.button(
-                "SUBMIT ANSWER", type="primary", disabled=selected is None or preview
-            ):
-                try:
-                    client.rpc("submit_battle_answer", {
-                        "p_battle_id": battle_id,
-                        "p_student_user_id": user_id,
-                        "p_position": current_position,
-                        "p_selected_index": int(selected),
-                    }).execute()
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Answer could not be submitted: {exc}")
+            return
+
+        if active_match:
+            st.info(
+                "A battle is active. Open BATTLE SPACE to continue the match."
+            )
             return
 
         latest_completed = next(
@@ -6332,7 +6372,7 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                     except Exception as exc:
                         st.error(f"Challenge could not be sent: {exc}")
 
-    with history_tab:
+    if section == "BATTLE HISTORY":
         completed = [
             row for row in matches
             if row.get("status") in {"completed", "cancelled"}
@@ -6366,7 +6406,7 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                 })
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
-    with instructions_tab:
+    if section == "GAME INSTRUCTIONS":
         st.markdown(
             "- Challenge one online student. A player can have only one pending "
             "challenge or active battle at a time. The same pair may battle only "
@@ -7737,7 +7777,7 @@ def analysis_xp_page() -> None:
         monthly_classes = classes.sort_values(["Monthly Rank", "Class"])[
             [
                 "Monthly Rank", "Class", "Students", "Monthly XP Average",
-                "Monthly XP Total", "Overall XP Average",
+                "Monthly XP Total", "Streak Average", "Overall XP Average",
             ]
         ]
         st.dataframe(monthly_classes, hide_index=True, width="stretch")
@@ -7745,7 +7785,7 @@ def analysis_xp_page() -> None:
         overall_classes = classes.sort_values(["Overall Rank", "Class"])[
             [
                 "Overall Rank", "Class", "Students", "Overall XP Average",
-                "Overall XP Total", "Monthly XP Average",
+                "Overall XP Total", "Streak Average", "Monthly XP Average",
             ]
         ]
         st.dataframe(overall_classes, hide_index=True, width="stretch")
@@ -7757,19 +7797,16 @@ def analysis_xp_page() -> None:
                 "Monthly XP Average": ("Monthly XP", "mean"),
                 "Overall XP Total": ("Overall XP", "sum"),
                 "Overall XP Average": ("Overall XP", "mean"),
+                "Streak Average": ("Current Streak", "mean"),
             },
         ).reset_index()
-        teams["Monthly Rank"] = teams["Monthly XP Average"].rank(
-            method="min", ascending=False
-        ).astype(int)
-        teams["Overall Rank"] = teams["Overall XP Average"].rank(
-            method="min", ascending=False
-        ).astype(int)
+        teams = add_group_rank(teams, "Monthly XP Average", "Monthly Rank")
+        teams = add_group_rank(teams, "Overall XP Average", "Overall Rank")
         st.subheader(f"Monthly XPTEAM ranking · {selected_month}")
         st.dataframe(
             teams.sort_values(["Monthly Rank", "XPTEAM"])[[
                 "Monthly Rank", "XPTEAM", "Students", "Monthly XP Average",
-                "Monthly XP Total", "Overall XP Average",
+                "Monthly XP Total", "Streak Average", "Overall XP Average",
             ]],
             hide_index=True, width="stretch",
         )
@@ -7777,7 +7814,7 @@ def analysis_xp_page() -> None:
         st.dataframe(
             teams.sort_values(["Overall Rank", "XPTEAM"])[[
                 "Overall Rank", "XPTEAM", "Students", "Overall XP Average",
-                "Overall XP Total", "Monthly XP Average",
+                "Overall XP Total", "Streak Average", "Monthly XP Average",
             ]],
             hide_index=True, width="stretch",
         )
