@@ -1711,6 +1711,7 @@ def sidebar(role: str, name: str) -> str:
                 "CRUD",
                 "Material",
                 "Quiz",
+                "Battle preview",
                 "Award XP",
                 "XP Mode",
                 "SOP",
@@ -1718,6 +1719,7 @@ def sidebar(role: str, name: str) -> str:
                 "Analysis background",
                 "Analysis results",
                 "Analysis XP",
+                "Analysis battle",
             ],
         }
         labels = {item: item.upper() for items in menus.values() for item in items}
@@ -1751,9 +1753,10 @@ def mobile_navigation(role: str, current_page: str) -> str:
             "XP: Journey", "XP: SOP", "XP: Request",
         ],
         "Admin": [
-            "User access", "CRUD", "Material", "Quiz", "Award XP", "XP Mode", "SOP",
+            "User access", "CRUD", "Material", "Quiz", "Battle preview",
+            "Award XP", "XP Mode", "SOP",
             "Student record", "Analysis background", "Analysis results",
-            "Analysis XP",
+            "Analysis XP", "Analysis battle",
         ],
     }
     active_key = f"active_page_{role.lower()}"
@@ -7734,6 +7737,286 @@ def analysis_progress_page() -> None:
     st.dataframe(class_progress, hide_index=True, width="stretch")
 
 
+def analysis_battle_page() -> None:
+    """Summarise Battle adoption, outcomes, speed, accuracy and XP."""
+    heading("", "Analysis Battle")
+    matches, matches_live = fetch_table("battle_matches", pd.DataFrame())
+    answers, _ = fetch_table("battle_answers", pd.DataFrame())
+    questions, _ = fetch_table("battle_questions", pd.DataFrame())
+    challenges, _ = fetch_table("battle_challenges", pd.DataFrame())
+    if not matches_live:
+        st.warning(
+            "Battle analysis requires the live Battle tables. Run migrations "
+            "024–027 first."
+        )
+        return
+    labels, details = battle_student_directory()
+    completed = matches[
+        matches.get("status", pd.Series(index=matches.index, dtype=str)).eq("completed")
+    ].copy()
+    cancelled = matches[
+        matches.get("status", pd.Series(index=matches.index, dtype=str)).eq("cancelled")
+    ].copy()
+    active = matches[
+        matches.get("status", pd.Series(index=matches.index, dtype=str)).eq("active")
+    ].copy()
+    participants = set()
+    for column in ("player_a_id", "player_b_id"):
+        if column in matches.columns:
+            participants.update(matches[column].dropna().astype(str))
+    total_finished = len(completed) + len(cancelled)
+    completion_rate = (
+        len(completed) / total_finished * 100 if total_finished else 0
+    )
+    total_xp = 0
+    if not completed.empty:
+        for column in ("player_a_xp", "player_b_xp"):
+            total_xp += int(pd.to_numeric(
+                completed.get(column, pd.Series(dtype=float)), errors="coerce"
+            ).fillna(0).sum())
+    a, b, c, d = st.columns(4)
+    with a:
+        metric("Completed battles", f"{len(completed):,}")
+    with b:
+        metric("Completion rate", f"{completion_rate:.1f}%")
+    with c:
+        metric("Unique players", f"{len(participants):,}")
+    with d:
+        metric("Battle XP awarded", f"{total_xp:,}")
+
+    overview_tab, performance_tab, players_tab = st.tabs([
+        "OVERVIEW", "QUESTION PERFORMANCE", "PLAYER ENGAGEMENT"
+    ])
+    with overview_tab:
+        status_rows = pd.DataFrame([
+            {"Status": "Active", "Battles": len(active)},
+            {"Status": "Completed", "Battles": len(completed)},
+            {"Status": "Cancelled", "Battles": len(cancelled)},
+        ])
+        challenge_rows = pd.DataFrame()
+        if not challenges.empty and "status" in challenges.columns:
+            challenge_rows = (
+                challenges["status"].fillna("unknown").astype(str).str.title()
+                .value_counts().rename_axis("Challenge status")
+                .reset_index(name="Challenges")
+            )
+        left, right = st.columns(2)
+        left.dataframe(status_rows, hide_index=True, width="stretch")
+        if challenge_rows.empty:
+            right.info("No challenge activity is recorded.")
+        else:
+            right.dataframe(challenge_rows, hide_index=True, width="stretch")
+        st.subheader("Recent battles")
+        if matches.empty:
+            st.info("No battles are recorded yet.")
+        else:
+            recent = matches.sort_values("started_at", ascending=False).head(50).copy()
+            recent["Player A"] = recent["player_a_id"].astype(str).map(labels).fillna("—")
+            recent["Player B"] = recent["player_b_id"].astype(str).map(labels).fillna("—")
+            recent["Score"] = (
+                pd.to_numeric(recent.get("player_a_wins", 0), errors="coerce").fillna(0).astype(int).astype(str)
+                + "–" +
+                pd.to_numeric(recent.get("player_b_wins", 0), errors="coerce").fillna(0).astype(int).astype(str)
+            )
+            st.dataframe(
+                recent[["Player A", "Player B", "status", "Score", "started_at", "completed_at"]]
+                .rename(columns={"status": "Status", "started_at": "Started", "completed_at": "Completed"}),
+                hide_index=True, width="stretch",
+            )
+    with performance_tab:
+        if answers.empty:
+            st.info("No Battle answers are recorded yet.")
+        else:
+            work = answers.copy()
+            work["is_correct"] = work.get("is_correct", False).fillna(False).astype(bool)
+            work["time_taken_ms"] = pd.to_numeric(
+                work.get("time_taken_ms", 0), errors="coerce"
+            ).fillna(0)
+            if not questions.empty and {"battle_id", "position", "difficulty"}.issubset(questions.columns):
+                work = work.merge(
+                    questions[["battle_id", "position", "difficulty"]],
+                    on=["battle_id", "position"], how="left",
+                )
+            work["Difficulty"] = work.get(
+                "difficulty", pd.Series("Unknown", index=work.index)
+            ).fillna("Unknown").astype(str).str.title()
+            summary = work.groupby("Difficulty", dropna=False).agg(
+                Answers=("student_user_id", "count"),
+                **{
+                    "Correct answers": ("is_correct", "sum"),
+                    "Accuracy (%)": ("is_correct", "mean"),
+                    "Average response (s)": ("time_taken_ms", "mean"),
+                },
+            ).reset_index()
+            summary["Accuracy (%)"] = (summary["Accuracy (%)"] * 100).round(1)
+            summary["Average response (s)"] = (
+                summary["Average response (s)"] / 1000
+            ).round(2)
+            st.dataframe(summary, hide_index=True, width="stretch")
+    with players_tab:
+        if completed.empty:
+            st.info("No completed Battle engagement is available.")
+        else:
+            rows: list[dict[str, Any]] = []
+            for _, match in completed.iterrows():
+                winner = str(match.get("winner_id") or "")
+                for side in ("a", "b"):
+                    player_id = str(match.get(f"player_{side}_id"))
+                    other = "b" if side == "a" else "a"
+                    rows.append({
+                        "Player": details.get(player_id, {}).get("name", labels.get(player_id, "—")),
+                        "Class": details.get(player_id, {}).get("class", "—"),
+                        "Battles": 1,
+                        "Wins": int(bool(winner) and winner == player_id),
+                        "Draws": int(not winner),
+                        "Question wins": int(match.get(f"player_{side}_wins") or 0),
+                        "XP": int(match.get(f"player_{side}_xp") or 0),
+                        "Opponent": labels.get(str(match.get(f"player_{other}_id")), "—"),
+                    })
+            player_rows = pd.DataFrame(rows)
+            standings = player_rows.groupby(["Player", "Class"], dropna=False).agg(
+                Battles=("Battles", "sum"), Wins=("Wins", "sum"),
+                Draws=("Draws", "sum"),
+                **{"Question wins": ("Question wins", "sum"), "Battle XP": ("XP", "sum")},
+            ).reset_index().sort_values(
+                ["Wins", "Question wins", "Battle XP"], ascending=False
+            )
+            standings.insert(0, "Rank", range(1, len(standings) + 1))
+            st.dataframe(standings, hide_index=True, width="stretch")
+
+
+PREVIEW_BATTLE_QUESTIONS = [
+    ("What is 7 + 5?", ["10", "11", "12", "13"], 2),
+    ("Solve: 3x = 18.", ["x = 5", "x = 6", "x = 7", "x = 8"], 1),
+    ("Which number is prime?", ["21", "27", "29", "33"], 2),
+    ("What is 25% of 80?", ["15", "20", "25", "30"], 1),
+    ("Simplify 2(a + 3).", ["2a + 3", "2a + 5", "2a + 6", "a + 6"], 2),
+    ("What is √81?", ["7", "8", "9", "10"], 2),
+    ("Find the next term: 2, 4, 8, 16, …", ["18", "24", "30", "32"], 3),
+    ("A triangle has angles 50° and 60°. Find the third angle.", ["60°", "70°", "80°", "90°"], 1),
+    ("Evaluate 4² − 3².", ["5", "7", "9", "13"], 1),
+    ("Which fraction equals 0.75?", ["1/2", "2/3", "3/4", "4/5"], 2),
+]
+
+
+def reset_admin_battle_preview() -> None:
+    st.session_state.admin_battle_preview = {
+        "status": "lobby", "position": 0, "admin_wins": 0,
+        "opponent_wins": 0, "draws": 0, "results": [],
+    }
+
+
+def admin_battle_preview_page() -> None:
+    """Interactive, session-only Battle UI preview with no database writes."""
+    heading("", "Battle Preview")
+    st.info(
+        "SANDBOX PREVIEW · Actions on this page are stored only in this browser "
+        "session. No Battle, answer, XP or streak record is written to Supabase."
+    )
+    if "admin_battle_preview" not in st.session_state:
+        reset_admin_battle_preview()
+    state = st.session_state.admin_battle_preview
+    pending_section = st.session_state.pop(
+        "admin_battle_preview_next_section", None
+    )
+    if pending_section:
+        st.session_state.admin_battle_preview_section = pending_section
+    if "admin_battle_preview_section" not in st.session_state:
+        st.session_state.admin_battle_preview_section = "BATTLE LOBBY"
+    section = st.segmented_control(
+        "Preview section",
+        ["BATTLE LOBBY", "BATTLE SPACE", "BATTLE HISTORY"],
+        key="admin_battle_preview_section",
+        label_visibility="collapsed",
+    )
+    if section == "BATTLE LOBBY":
+        st.subheader("START A SIMULATED MATCH")
+        opponent = st.selectbox(
+            "Preview opponent", ["SOFIA · H7T5", "BRIAN · F3T1", "DANISH · J1T2"]
+        )
+        if st.button("START PREVIEW BATTLE", type="primary"):
+            reset_admin_battle_preview()
+            state = st.session_state.admin_battle_preview
+            state.update({"status": "active", "opponent": opponent})
+            st.session_state.admin_battle_preview_next_section = "BATTLE SPACE"
+            st.rerun()
+    elif section == "BATTLE SPACE":
+        if state.get("status") != "active":
+            st.info("Start a simulated match from BATTLE LOBBY.")
+        else:
+            position = int(state["position"])
+            opponent = str(state.get("opponent", "PREVIEW STUDENT"))
+            with st.container(key="battle_matchup"):
+                st.markdown(
+                    '<div class="battle-matchup-grid">'
+                    f'<div><div class="battle-player-name">AIMAN · ADMIN</div><div class="battle-player-score">{state["admin_wins"]}</div></div>'
+                    '<div class="battle-versus">VS</div>'
+                    f'<div><div class="battle-player-name">{html.escape(opponent)}</div><div class="battle-player-score">{state["opponent_wins"]}</div></div>'
+                    '</div>', unsafe_allow_html=True,
+                )
+            if st.button("LEAVE PREVIEW BATTLE", key="leave_battle_preview"):
+                reset_admin_battle_preview()
+                st.session_state.admin_battle_preview_next_section = "BATTLE LOBBY"
+                st.rerun()
+            if position >= len(PREVIEW_BATTLE_QUESTIONS):
+                admin_score = int(state["admin_wins"])
+                opponent_score = int(state["opponent_wins"])
+                result = "WIN" if admin_score > opponent_score else (
+                    "LOSS" if admin_score < opponent_score else "DRAW"
+                )
+                st.success(f"PREVIEW COMPLETE · {result} · {admin_score}–{opponent_score}")
+                if st.button("RETURN TO LOBBY", type="primary"):
+                    reset_admin_battle_preview()
+                    st.session_state.admin_battle_preview_next_section = "BATTLE LOBBY"
+                    st.rerun()
+            else:
+                question, options, correct = PREVIEW_BATTLE_QUESTIONS[position]
+                st.progress(position / 10, text=f"QUESTION {position + 1} OF 10 · 60 seconds")
+                with st.container(key="battle_question_stage"):
+                    st.markdown(f"### {position + 1}. {question}")
+                with st.container(key="battle_answer_arena"):
+                    columns = st.columns(4)
+                    for index, option in enumerate(options):
+                        with columns[index]:
+                            if st.button(
+                                f"{chr(65 + index)}\n\n{option}",
+                                key=f"preview_battle_{position}_{index}",
+                                use_container_width=True,
+                            ):
+                                opponent_answer = (position * 3 + 1) % 4
+                                admin_correct = index == correct
+                                opponent_correct = opponent_answer == correct
+                                if admin_correct and not opponent_correct:
+                                    outcome = "ADMIN"
+                                    state["admin_wins"] += 1
+                                elif opponent_correct and not admin_correct:
+                                    outcome = "OPPONENT"
+                                    state["opponent_wins"] += 1
+                                else:
+                                    outcome = "DRAW"
+                                    state["draws"] += 1
+                                state["results"].append({
+                                    "Question": position + 1,
+                                    "Your answer": chr(65 + index),
+                                    "Correct": chr(65 + correct),
+                                    "Outcome": outcome,
+                                })
+                                state["position"] += 1
+                                st.rerun()
+                if state["results"]:
+                    latest = state["results"][-1]
+                    st.caption(
+                        f"Previous: Q{latest['Question']} · Correct {latest['Correct']} "
+                        f"· {latest['Outcome']}"
+                    )
+    else:
+        history = state.get("results", [])
+        if history:
+            st.dataframe(pd.DataFrame(history), hide_index=True, width="stretch")
+        else:
+            st.info("No preview answers in this session yet.")
+
+
 def analysis_xp_page() -> None:
     heading("", "Analysis XP")
     _, _, months, default_month = leaderboard_data()
@@ -8629,6 +8912,7 @@ def main() -> None:
             "Analysis background": analysis_background_page,
             "Analysis results": analysis_progress_page,
             "Analysis XP": analysis_xp_page,
+            "Analysis battle": analysis_battle_page,
             "CRUD": admin_crud_page,
             "Award XP": award_xp_page,
             "XP Mode": admin_xp_mode_page,
@@ -8636,6 +8920,7 @@ def main() -> None:
             "User access": user_access_page,
             "Material": lambda: materials_page(True),
             "Quiz": admin_quiz_page,
+            "Battle preview": admin_battle_preview_page,
         }[page]()
 
 
