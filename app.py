@@ -7053,6 +7053,30 @@ def _legacy_award_xp_page() -> None:
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
 
+    # Admin-managed ledger entries include direct manual awards and awards
+    # created when an Admin approves a student XP request. Automatic quiz and
+    # Battle events remain outside destructive edit/delete controls.
+    managed_events = events.copy()
+    if not managed_events.empty:
+        source_ids = managed_events.get(
+            "source_id", pd.Series("", index=managed_events.index)
+        ).fillna("").astype(str)
+        award_modes = managed_events.get(
+            "award_mode", pd.Series("", index=managed_events.index)
+        ).fillna("").astype(str).str.lower()
+        approved_request = source_ids.str.startswith("claim-")
+        direct_manual = award_modes.eq("manual") & ~approved_request
+        managed_events = managed_events[
+            approved_request | direct_manual
+        ].copy()
+        managed_events["Admin source"] = "Manual award"
+        managed_approved_request = managed_events.get(
+            "source_id", pd.Series("", index=managed_events.index)
+        ).fillna("").astype(str).str.startswith("claim-")
+        managed_events.loc[managed_approved_request, "Admin source"] = (
+            "Approved request"
+        )
+
     matric_col = next((c for c in ["NO MATRIK", "student_id"] if c in students.columns), None)
     name_col = next((c for c in ["NAMA PELAJAR", "name", "student_name"] if c in students.columns), None)
     if not matric_col or students.empty or rules.empty:
@@ -7312,10 +7336,10 @@ def award_xp_page() -> None:
     } if not rules.empty else {}
 
     with view_tab:
-        if events.empty:
-            st.info("No XP records are available.")
+        if managed_events.empty:
+            st.info("No Admin-managed XP awards are available.")
         else:
-            shown_events = events.copy()
+            shown_events = managed_events.copy()
             shown_events["Student"] = shown_events["NO MATRIK"].map(
                 identity_label
             )
@@ -7348,7 +7372,7 @@ def award_xp_page() -> None:
             visible_columns = [
                 column for column in [
                     "Time", "Student", "Type", "points", "XP Mode",
-                    "Multiplier", "Method", "reason",
+                    "Multiplier", "Admin source", "Method", "reason",
                 ] if column in shown_events.columns
             ]
             st.dataframe(
@@ -7652,8 +7676,8 @@ def award_xp_page() -> None:
                     st.error(f"Selected requests could not be rejected: {exc}")
             claim_review_form.__exit__(None, None, None)
     with records_tab:
-        if events.empty or "id" not in events.columns:
-            st.info("No XP records are available.")
+        if managed_events.empty or "id" not in managed_events.columns:
+            st.info("No Admin-managed XP awards are available.")
         else:
             def event_points(value: Any) -> int:
                 numeric = pd.to_numeric(value, errors="coerce")
@@ -7662,10 +7686,11 @@ def award_xp_page() -> None:
             event_labels = {
                 row["id"]: (
                     f"{identity_label(row.get('NO MATRIK', ''))} · "
+                    f"{row.get('Admin source', 'Manual award')} · "
                     f"{str(row.get('rule_code', '')).replace('_', ' ').title()} · "
                     f"{event_points(row.get('points')):+d} XP"
                 )
-                for _, row in events.sort_values(
+                for _, row in managed_events.sort_values(
                     "created_at", ascending=False, na_position="last"
                 ).iterrows()
             }
@@ -7674,7 +7699,7 @@ def award_xp_page() -> None:
                 format_func=lambda value: event_labels[value],
                 key="manage_xp_event_id",
             )
-            event = events[events["id"] == event_id].iloc[0]
+            event = managed_events[managed_events["id"] == event_id].iloc[0]
             with st.form("edit_xp_event"):
                 edited_points = st.number_input(
                     "XP points", min_value=-1000, max_value=1000,
