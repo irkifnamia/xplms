@@ -7053,30 +7053,6 @@ def _legacy_award_xp_page() -> None:
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
 
-    # Admin-managed ledger entries include direct manual awards and awards
-    # created when an Admin approves a student XP request. Automatic quiz and
-    # Battle events remain outside destructive edit/delete controls.
-    managed_events = events.copy()
-    if not managed_events.empty:
-        source_ids = managed_events.get(
-            "source_id", pd.Series("", index=managed_events.index)
-        ).fillna("").astype(str)
-        award_modes = managed_events.get(
-            "award_mode", pd.Series("", index=managed_events.index)
-        ).fillna("").astype(str).str.lower()
-        approved_request = source_ids.str.startswith("claim-")
-        direct_manual = award_modes.eq("manual") & ~approved_request
-        managed_events = managed_events[
-            approved_request | direct_manual
-        ].copy()
-        managed_events["Admin source"] = "Manual award"
-        managed_approved_request = managed_events.get(
-            "source_id", pd.Series("", index=managed_events.index)
-        ).fillna("").astype(str).str.startswith("claim-")
-        managed_events.loc[managed_approved_request, "Admin source"] = (
-            "Approved request"
-        )
-
     matric_col = next((c for c in ["NO MATRIK", "student_id"] if c in students.columns), None)
     name_col = next((c for c in ["NAMA PELAJAR", "name", "student_name"] if c in students.columns), None)
     if not matric_col or students.empty or rules.empty:
@@ -7284,6 +7260,30 @@ def award_xp_page() -> None:
         ])]
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
+
+    # Admin-managed ledger entries include direct manual awards and awards
+    # created when an Admin approves a student XP request. Automatic quiz and
+    # Battle events remain outside destructive edit/delete controls.
+    managed_events = events.copy()
+    if not managed_events.empty:
+        source_ids = managed_events.get(
+            "source_id", pd.Series("", index=managed_events.index)
+        ).fillna("").astype(str)
+        award_modes = managed_events.get(
+            "award_mode", pd.Series("", index=managed_events.index)
+        ).fillna("").astype(str).str.lower()
+        approved_request = source_ids.str.startswith("claim-")
+        direct_manual = award_modes.eq("manual") & ~approved_request
+        managed_events = managed_events[
+            approved_request | direct_manual
+        ].copy()
+        managed_events["Admin source"] = "Manual award"
+        managed_approved_request = managed_events.get(
+            "source_id", pd.Series("", index=managed_events.index)
+        ).fillna("").astype(str).str.startswith("claim-")
+        managed_events.loc[managed_approved_request, "Admin source"] = (
+            "Approved request"
+        )
 
     view_tab, manual_tab, approval_tab, records_tab = st.tabs(
         [
