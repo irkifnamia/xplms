@@ -5253,6 +5253,20 @@ def render_resolved_quiz_reports() -> None:
         st.info("No resolved quiz question report is available.")
         return
 
+    question_ids = reports["question_id"].dropna().astype(int).unique().tolist()
+    try:
+        current_questions = pd.DataFrame(
+            client.table("quiz_questions").select("*").in_(
+                "id", question_ids
+            ).execute().data or []
+        ) if question_ids else pd.DataFrame()
+    except Exception:
+        current_questions = pd.DataFrame()
+    current_question_map = {
+        int(row["id"]): row.to_dict()
+        for _, row in current_questions.iterrows()
+    } if not current_questions.empty else {}
+
     keyword = st.text_input(
         "Search resolved reports",
         placeholder="Search student, NO MATRIK, chapter, outcome or question…",
@@ -5283,6 +5297,17 @@ def render_resolved_quiz_reports() -> None:
             return str(value.get("question_text") or value.get("question") or "")
         return ""
 
+    def snapshot_dict(snapshot: Any) -> dict[str, Any]:
+        if isinstance(snapshot, dict):
+            return snapshot
+        if isinstance(snapshot, str):
+            try:
+                parsed = json.loads(snapshot)
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return {}
+
     display_rows: list[dict[str, Any]] = []
     for _, report in reports.iterrows():
         matric = str(report.get("NO MATRIK") or "")
@@ -5293,6 +5318,7 @@ def render_resolved_quiz_reports() -> None:
             if pd.notna(reviewed) else "—"
         )
         display_rows.append({
+            "Report ID": int(report["id"]),
             "Resolved at": reviewed_text,
             "Outcome": str(report.get("status") or "").upper(),
             "Student": identity.get("name", "UNKNOWN"),
@@ -5314,7 +5340,98 @@ def render_resolved_quiz_reports() -> None:
     if display.empty:
         st.info("No resolved report matches the search.")
     else:
-        st.dataframe(display, hide_index=True, width="stretch")
+        st.dataframe(
+            display.drop(columns=["Report ID"]),
+            hide_index=True,
+            width="stretch",
+        )
+        st.subheader("RESOLVED REPORT DETAILS")
+        visible_ids = set(display["Report ID"].astype(int).tolist())
+        for _, report in reports.iterrows():
+            report_id = int(report["id"])
+            if report_id not in visible_ids:
+                continue
+            snapshot = snapshot_dict(report.get("question_snapshot"))
+            current = current_question_map.get(int(report.get("question_id") or 0), {})
+            snapshot_options = snapshot.get("options") or []
+            current_options = current.get("options") or []
+            if isinstance(snapshot_options, str):
+                try:
+                    snapshot_options = json.loads(snapshot_options)
+                except json.JSONDecodeError:
+                    snapshot_options = []
+            if isinstance(current_options, str):
+                try:
+                    current_options = json.loads(current_options)
+                except json.JSONDecodeError:
+                    current_options = []
+            matric = str(report.get("NO MATRIK") or "")
+            identity = identity_map.get(matric, {})
+            label = (
+                f"{str(report.get('status') or '').upper()} · "
+                f"{identity.get('name', 'UNKNOWN')} · C{report.get('chapter')} · "
+                f"REPORT {report_id}"
+            )
+            with st.expander(label):
+                student_answer = report.get("student_answer")
+                original_correct = snapshot.get("correct_index")
+                answer_letters = ("A", "B", "C", "D")
+                student_letter = (
+                    answer_letters[int(student_answer)]
+                    if pd.notna(student_answer) and 0 <= int(student_answer) < 4
+                    else "—"
+                )
+                original_letter = (
+                    answer_letters[int(original_correct)]
+                    if pd.notna(original_correct) and 0 <= int(original_correct) < 4
+                    else "—"
+                )
+                st.caption(
+                    f"Student answer: {student_letter} · "
+                    f"Answer recorded during attempt: {original_letter}"
+                )
+                original_col, current_col = st.columns(2)
+                with original_col:
+                    st.markdown("**QUESTION WHEN REPORTED**")
+                    st.markdown(str(
+                        snapshot.get("question")
+                        or snapshot.get("question_text")
+                        or "Unavailable"
+                    ))
+                    for index, option in enumerate(snapshot_options[:4]):
+                        st.markdown(
+                            f"**{answer_letters[index]}.** {option}"
+                        )
+                    st.markdown(
+                        f"**Correct answer:** {original_letter}"
+                    )
+                    st.markdown(
+                        f"**Explanation:** {snapshot.get('explanation') or '—'}"
+                    )
+                with current_col:
+                    st.markdown("**CURRENT SAVED QUESTION**")
+                    st.markdown(str(
+                        current.get("question")
+                        or current.get("question_text")
+                        or "Unavailable"
+                    ))
+                    for index, option in enumerate(current_options[:4]):
+                        st.markdown(
+                            f"**{answer_letters[index]}.** {option}"
+                        )
+                    current_correct = current.get("correct_index")
+                    current_letter = (
+                        answer_letters[int(current_correct)]
+                        if pd.notna(current_correct)
+                        and 0 <= int(current_correct) < 4 else "—"
+                    )
+                    st.markdown(f"**Correct answer:** {current_letter}")
+                    st.markdown(
+                        f"**Explanation:** {current.get('explanation') or '—'}"
+                    )
+                st.markdown(
+                    f"**Admin resolution notes:** {report.get('admin_notes') or '—'}"
+                )
 
 
 def admin_quiz_page() -> None:
