@@ -1717,6 +1717,8 @@ def sidebar(role: str, name: str) -> str:
                 "SOP",
                 "Student record",
                 "Analysis background",
+                "Analysis student",
+                "Analysis class",
                 "Analysis results",
                 "Analysis XP",
                 "Analysis battle",
@@ -1756,7 +1758,8 @@ def mobile_navigation(role: str, current_page: str) -> str:
             "User access", "CRUD", "Material", "Quiz", "Battle preview",
             "Award XP", "XP Mode", "SOP",
             "Student record", "Analysis background", "Analysis results",
-            "Analysis XP", "Analysis battle",
+            "Analysis student", "Analysis class", "Analysis XP",
+            "Analysis battle",
         ],
     }
     active_key = f"active_page_{role.lower()}"
@@ -7802,6 +7805,473 @@ def analysis_progress_page() -> None:
     st.dataframe(class_progress, hide_index=True, width="stretch")
 
 
+def admin_learning_analytics_data() -> tuple[
+    pd.DataFrame, list[str], list[str], list[str], bool
+]:
+    """Return a normalized student analytics frame and available measures."""
+    merged, live = merged_students()
+    if merged.empty:
+        return merged, [], [], [], live
+    matric_col = next((
+        column for column in ["NO MATRIK", "student_id", "stud_id"]
+        if column in merged.columns
+    ), None)
+    if not matric_col:
+        return pd.DataFrame(), [], [], [], live
+    name_col = next((
+        column for column in [
+            "NICKNAME PELAJAR", "NAMA PELAJAR", "name", "student_name"
+        ] if column in merged.columns
+    ), None)
+    class_col = next((
+        column for column in ["KELAS", "CLASS", "class", "cohort"]
+        if column in merged.columns
+    ), None)
+    data = merged.copy()
+    data["_matric"] = data[matric_col].astype(str)
+    data["Student"] = (
+        data[name_col].fillna(data[matric_col]).astype(str)
+        if name_col else data[matric_col].astype(str)
+    )
+    data["Class"] = (
+        data[class_col].fillna("Unassigned").astype(str)
+        if class_col else "Unassigned"
+    )
+    individuals, _, _, _ = leaderboard_data()
+    if not individuals.empty and "NO MATRIK" in individuals.columns:
+        lookup = individuals.copy()
+        lookup["NO MATRIK"] = lookup["NO MATRIK"].astype(str)
+        lookup = lookup.drop_duplicates("NO MATRIK").set_index("NO MATRIK")
+        for source, target in [
+            ("Overall XP", "Overall XP"),
+            ("Current Streak", "Current Streak"),
+            ("Badge", "XP Badge"),
+            ("Streak Badge", "Streak Badge"),
+            ("XPTEAM", "XPTEAM"),
+        ]:
+            if source in lookup.columns:
+                data[target] = data["_matric"].map(lookup[source])
+    if "Overall XP" not in data.columns:
+        xp_source = next((
+            column for column in ["xp", "XP", "xp_y", "xp_x"]
+            if column in data.columns
+        ), None)
+        data["Overall XP"] = (
+            pd.to_numeric(data[xp_source], errors="coerce").fillna(0)
+            if xp_source else 0
+        )
+    data["Overall XP"] = pd.to_numeric(
+        data["Overall XP"], errors="coerce"
+    ).fillna(0)
+    data["Current Streak"] = pd.to_numeric(
+        data.get("Current Streak", pd.Series(0, index=data.index)),
+        errors="coerce",
+    ).fillna(0)
+    data["XP Badge"] = data.get(
+        "XP Badge", pd.Series("None", index=data.index)
+    ).fillna("None")
+    data["Streak Badge"] = data.get(
+        "Streak Badge", pd.Series("None", index=data.index)
+    ).fillna("None")
+    assessments = [
+        column for column in ASSESSMENT_COLUMNS
+        if column in data.columns
+        and pd.to_numeric(data[column], errors="coerce").notna().any()
+    ]
+    background_results = [
+        column for column in data.columns
+        if (
+            str(column).upper().startswith("SPM")
+            or str(column).upper() in {"DM015", "DM025"}
+        )
+        and data[column].notna().any()
+    ]
+    zones = [
+        column for column in data.columns
+        if str(column).upper().endswith("_ZONE")
+    ]
+    return data, assessments, background_results, zones, live
+
+
+def analysis_student_page() -> None:
+    heading("", "Analysis Student")
+    data, assessments, background_results, zones, live = (
+        admin_learning_analytics_data()
+    )
+    if data.empty:
+        st.info("No student analytics data is available.")
+        return
+    classes = sorted(data["Class"].dropna().astype(str).unique().tolist())
+    filter_col, student_col = st.columns([1, 2])
+    selected_class = filter_col.selectbox(
+        "Class", ["ALL", *classes], key="analysis_student_class"
+    )
+    candidates = data if selected_class == "ALL" else data[
+        data["Class"].astype(str) == selected_class
+    ]
+    student_ids = candidates["_matric"].astype(str).tolist()
+    selected_matric = student_col.selectbox(
+        "Student",
+        student_ids,
+        format_func=lambda value: (
+            f"{candidates.loc[candidates['_matric'] == value, 'Student'].iloc[0]}"
+            f" · {candidates.loc[candidates['_matric'] == value, 'Class'].iloc[0]}"
+            f" · {value}"
+        ),
+        key="analysis_student_matric",
+    )
+    row = data[data["_matric"] == selected_matric].iloc[0]
+    badges, _ = fetch_table("student_badges", pd.DataFrame())
+    student_badges = badges[
+        badges.get("NO MATRIK", pd.Series(index=badges.index, dtype=str))
+        .astype(str).eq(selected_matric)
+    ].copy() if not badges.empty else pd.DataFrame()
+    badge_count = len(student_badges)
+    a, b, c, d = st.columns(4)
+    with a:
+        metric("Overall XP", f"{int(row['Overall XP']):,}")
+    with b:
+        metric("Current streak", f"{int(row['Current Streak'])} days")
+    with c:
+        metric("XP badge", str(row.get("XP Badge", "None")))
+    with d:
+        metric("Badges captured", str(badge_count))
+
+    assessment_tab, background_tab, xp_tab, record_tab = st.tabs([
+        "ASSESSMENTS", "BACKGROUND & ZONES", "XP, STREAK & BADGES", "SUMMARY TABLE"
+    ])
+    with assessment_tab:
+        if not assessments:
+            st.info("No assessment marks are available for this student.")
+        else:
+            chart_rows = []
+            class_rows = data[data["Class"] == row["Class"]]
+            for assessment in assessments:
+                student_mark = pd.to_numeric(row.get(assessment), errors="coerce")
+                class_average = pd.to_numeric(
+                    class_rows[assessment], errors="coerce"
+                ).mean()
+                if pd.notna(student_mark):
+                    chart_rows.append({
+                        "Assessment": assessment, "Series": "Student",
+                        "Mark": float(student_mark),
+                    })
+                    chart_rows.append({
+                        "Assessment": assessment, "Series": "Class average",
+                        "Mark": float(class_average) if pd.notna(class_average) else 0,
+                    })
+            chart = pd.DataFrame(chart_rows)
+            if chart.empty:
+                st.info("No assessment marks are available for this student.")
+            else:
+                fig = px.bar(
+                    chart, x="Assessment", y="Mark", color="Series",
+                    barmode="group", text_auto=".1f",
+                    color_discrete_map={
+                        "Student": "#1f63b5", "Class average": "#20a39e"
+                    },
+                )
+                fig.update_layout(height=410, yaxis_title="Mark", xaxis_title="")
+                polish_chart(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    chart.pivot(index="Assessment", columns="Series", values="Mark")
+                    .reset_index().round(2),
+                    hide_index=True, width="stretch",
+                )
+    with background_tab:
+        left, right = st.columns([1.2, 1])
+        with left:
+            if background_results:
+                background_chart = pd.DataFrame({
+                    "Result": background_results,
+                    "Value": [
+                        pd.to_numeric(row.get(column), errors="coerce")
+                        for column in background_results
+                    ],
+                }).dropna()
+                if not background_chart.empty:
+                    fig = px.bar(
+                        background_chart, x="Result", y="Value", text_auto=".2f",
+                        color="Result", color_discrete_sequence=px.colors.qualitative.Safe,
+                    )
+                    fig.update_layout(height=350, showlegend=False)
+                    polish_chart(fig)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("The recorded background results use grade categories.")
+                st.dataframe(
+                    pd.DataFrame({
+                        "Background result": background_results,
+                        "Value": [row.get(column, "—") for column in background_results],
+                    }),
+                    hide_index=True, width="stretch",
+                )
+            else:
+                st.info("No SPM, DM015 or DM025 fields are available.")
+        with right:
+            zone_rows = [
+                {"Zone field": column, "Zone": row.get(column, "—")}
+                for column in zones if pd.notna(row.get(column))
+            ]
+            if zone_rows:
+                st.dataframe(
+                    pd.DataFrame(zone_rows), hide_index=True, width="stretch"
+                )
+            else:
+                st.info("No performance zone is recorded for this student.")
+    with xp_tab:
+        events, _ = fetch_table("xp_events", pd.DataFrame())
+        student_events = events[
+            events.get("NO MATRIK", pd.Series(index=events.index, dtype=str))
+            .astype(str).eq(selected_matric)
+        ].copy() if not events.empty else pd.DataFrame()
+        if not student_events.empty and {"created_at", "points"}.issubset(student_events.columns):
+            student_events["Date"] = pd.to_datetime(
+                student_events["created_at"], errors="coerce", utc=True
+            ).dt.tz_convert("Asia/Kuala_Lumpur")
+            student_events["XP"] = pd.to_numeric(
+                student_events["points"], errors="coerce"
+            ).fillna(0)
+            student_events = student_events.sort_values("Date")
+            student_events["Cumulative XP"] = student_events["XP"].cumsum()
+            fig = px.line(
+                student_events, x="Date", y="Cumulative XP", markers=True,
+                color_discrete_sequence=["#1f63b5"],
+            )
+            fig.update_layout(height=340)
+            polish_chart(fig)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No XP event history is recorded for this student.")
+        if student_badges.empty:
+            st.info("No permanent badge is recorded for this student.")
+        else:
+            visible = [
+                column for column in [
+                    "badge_family", "badge_name", "xp_threshold",
+                    "streak_threshold", "earned_at",
+                ] if column in student_badges.columns
+            ]
+            if visible:
+                st.dataframe(
+                    student_badges[visible].sort_values(
+                        "earned_at" if "earned_at" in visible else visible[0]
+                    ),
+                    hide_index=True, width="stretch",
+                )
+    with record_tab:
+        summary_columns = [
+            "Student", "_matric", "Class", "XPTEAM", "Overall XP",
+            "Current Streak", "XP Badge", "Streak Badge",
+            *background_results, *assessments, *zones,
+        ]
+        summary_columns = list(dict.fromkeys(
+            column for column in summary_columns if column in data.columns
+        ))
+        st.dataframe(
+            row[summary_columns].rename({"_matric": "NO MATRIK"})
+            .rename_axis("Field").reset_index(name="Value"),
+            hide_index=True, width="stretch",
+        )
+    if not live:
+        st.caption("Some sample data is shown because live tables are unavailable.")
+
+
+def analysis_class_page() -> None:
+    heading("", "Analysis Class")
+    data, assessments, background_results, zones, live = (
+        admin_learning_analytics_data()
+    )
+    if data.empty:
+        st.info("No class analytics data is available.")
+        return
+    classes = sorted(data["Class"].dropna().astype(str).unique().tolist())
+    selected_class = st.selectbox(
+        "Focus class", ["ALL", *classes], key="analysis_class_focus"
+    )
+    focused = data if selected_class == "ALL" else data[
+        data["Class"].astype(str) == selected_class
+    ]
+    a, b, c, d = st.columns(4)
+    with a:
+        metric("Students", f"{focused['_matric'].nunique():,}")
+    with b:
+        metric("Average XP", f"{focused['Overall XP'].mean():.2f}")
+    with c:
+        metric("Average streak", f"{focused['Current Streak'].mean():.2f} days")
+    with d:
+        active = int((focused["Current Streak"] > 0).sum())
+        metric("Active streaks", f"{active:,}")
+
+    assessment_tab, xp_tab, background_tab, zone_tab, badge_tab = st.tabs([
+        "ASSESSMENTS", "XP & STREAK", "BACKGROUND RESULTS", "ZONES", "BADGES"
+    ])
+    with assessment_tab:
+        if not assessments:
+            st.info("No assessment marks are available.")
+        else:
+            rows = []
+            source = data if selected_class == "ALL" else focused
+            for class_name, group in source.groupby("Class", dropna=False):
+                for assessment in assessments:
+                    values = pd.to_numeric(group[assessment], errors="coerce").dropna()
+                    if not values.empty:
+                        rows.append({
+                            "Class": class_name, "Assessment": assessment,
+                            "Average mark": values.mean(), "Students": len(values),
+                        })
+            assessment_summary = pd.DataFrame(rows)
+            if assessment_summary.empty:
+                st.info("No assessment marks are available.")
+            else:
+                fig = px.bar(
+                    assessment_summary, x="Assessment", y="Average mark",
+                    color="Class", barmode="group", text_auto=".1f",
+                )
+                fig.update_layout(height=440, xaxis_title="", yaxis_title="Average mark")
+                polish_chart(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    assessment_summary.round({"Average mark": 2}),
+                    hide_index=True, width="stretch",
+                )
+    with xp_tab:
+        xp_summary = data.groupby("Class", dropna=False).agg(
+            Students=("_matric", "nunique"),
+            **{
+                "XP average": ("Overall XP", "mean"),
+                "XP total": ("Overall XP", "sum"),
+                "Streak average": ("Current Streak", "mean"),
+                "Active streaks": ("Current Streak", lambda values: int((values > 0).sum())),
+            },
+        ).reset_index()
+        if selected_class != "ALL":
+            xp_summary = xp_summary[xp_summary["Class"] == selected_class]
+        left, right = st.columns(2)
+        xp_fig = px.bar(
+            xp_summary, x="Class", y="XP average", text_auto=".2f",
+            color_discrete_sequence=["#1f63b5"],
+        )
+        xp_fig.update_layout(height=360, showlegend=False)
+        polish_chart(xp_fig)
+        left.plotly_chart(xp_fig, use_container_width=True)
+        streak_fig = px.bar(
+            xp_summary, x="Class", y="Streak average", text_auto=".2f",
+            color_discrete_sequence=["#20a39e"],
+        )
+        streak_fig.update_layout(height=360, showlegend=False)
+        polish_chart(streak_fig)
+        right.plotly_chart(streak_fig, use_container_width=True)
+        st.dataframe(xp_summary.round(2), hide_index=True, width="stretch")
+    with background_tab:
+        if not background_results:
+            st.info("No SPM, DM015 or DM025 fields are available.")
+        else:
+            rows = []
+            category_rows = []
+            source = data if selected_class == "ALL" else focused
+            for class_name, group in source.groupby("Class", dropna=False):
+                for result in background_results:
+                    values = pd.to_numeric(group[result], errors="coerce").dropna()
+                    if not values.empty:
+                        rows.append({
+                            "Class": class_name, "Result": result,
+                            "Average": values.mean(), "Students": len(values),
+                        })
+                    else:
+                        counts = group[result].fillna("Not recorded").astype(
+                            str
+                        ).value_counts()
+                        category_rows.extend({
+                            "Class": class_name, "Result": result,
+                            "Grade / value": value, "Students": int(count),
+                        } for value, count in counts.items())
+            summary = pd.DataFrame(rows)
+            if summary.empty:
+                st.info("No numeric background-result averages are available.")
+            else:
+                fig = px.bar(
+                    summary, x="Result", y="Average", color="Class",
+                    barmode="group", text_auto=".2f",
+                )
+                fig.update_layout(height=400)
+                polish_chart(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(summary.round(2), hide_index=True, width="stretch")
+            category_summary = pd.DataFrame(category_rows)
+            if not category_summary.empty:
+                st.subheader("Grade distribution")
+                fig = px.bar(
+                    category_summary, x="Grade / value", y="Students",
+                    color="Class", facet_col="Result", barmode="group",
+                    text_auto=True,
+                )
+                fig.update_layout(height=400)
+                polish_chart(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    category_summary, hide_index=True, width="stretch"
+                )
+    with zone_tab:
+        if not zones:
+            st.info("No zone fields are available.")
+        else:
+            selected_zone = st.selectbox(
+                "Zone assessment", zones, key="analysis_class_zone"
+            )
+            source = data if selected_class == "ALL" else focused
+            zone_summary = source.groupby(
+                ["Class", selected_zone], dropna=False
+            )["_matric"].nunique().reset_index(name="Students")
+            zone_summary[selected_zone] = zone_summary[selected_zone].fillna(
+                "Not assigned"
+            ).astype(str)
+            fig = px.bar(
+                zone_summary, x="Class", y="Students", color=selected_zone,
+                barmode="stack", text_auto=True,
+            )
+            fig.update_layout(height=400)
+            polish_chart(fig)
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(zone_summary, hide_index=True, width="stretch")
+    with badge_tab:
+        badges, _ = fetch_table("student_badges", pd.DataFrame())
+        if badges.empty or "NO MATRIK" not in badges.columns:
+            st.info("No permanent badge records are available.")
+        else:
+            identities = data[["_matric", "Class"]].drop_duplicates()
+            badge_rows = badges.copy()
+            badge_rows["NO MATRIK"] = badge_rows["NO MATRIK"].astype(str)
+            badge_rows = badge_rows.merge(
+                identities, left_on="NO MATRIK", right_on="_matric", how="left"
+            )
+            if selected_class != "ALL":
+                badge_rows = badge_rows[badge_rows["Class"] == selected_class]
+            badge_rows["Badge"] = (
+                badge_rows.get(
+                    "badge_family", pd.Series("XP", index=badge_rows.index)
+                ).fillna("XP").astype(str).str.upper()
+                + " " + badge_rows["badge_name"].astype(str).str.upper()
+            )
+            badge_summary = badge_rows.groupby(
+                ["Class", "Badge"], dropna=False
+            )["NO MATRIK"].nunique().reset_index(name="Students achieved")
+            if badge_summary.empty:
+                st.info("No badge records match the selected class.")
+            else:
+                fig = px.bar(
+                    badge_summary, x="Badge", y="Students achieved", color="Class",
+                    barmode="group", text_auto=True,
+                )
+                fig.update_layout(height=420)
+                polish_chart(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(badge_summary, hide_index=True, width="stretch")
+    if not live:
+        st.caption("Some sample data is shown because live tables are unavailable.")
+
+
 def analysis_battle_page() -> None:
     """Summarise Battle adoption, outcomes, speed, accuracy and XP."""
     heading("", "Analysis Battle")
@@ -8990,6 +9460,8 @@ def main() -> None:
         {
             "Student record": admin_student_records_page,
             "Analysis background": analysis_background_page,
+            "Analysis student": analysis_student_page,
+            "Analysis class": analysis_class_page,
             "Analysis results": analysis_progress_page,
             "Analysis XP": analysis_xp_page,
             "Analysis battle": analysis_battle_page,
