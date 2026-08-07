@@ -7475,9 +7475,145 @@ def render_quiz_history_tab() -> None:
             )
 
 
+def render_student_question_reports() -> None:
+    """Show the current student's question-report history and resolution."""
+    user = current_user()
+    matric = str(user.get("no_matrik") or "")
+    if not matric or not db():
+        st.info("Question report history is unavailable.")
+        return
+    try:
+        rows = _cached_filtered_rows(
+            "quiz_question_reports", "NO MATRIK", matric
+        )
+    except Exception:
+        st.warning(
+            "Question report history is unavailable. Ensure migration 021 has "
+            "been applied."
+        )
+        return
+    reports = pd.DataFrame(rows)
+    if reports.empty:
+        st.info("You have not submitted a quiz question report yet.")
+        return
+
+    def local_time(value: Any) -> str:
+        parsed = pd.to_datetime(value, errors="coerce", utc=True)
+        return (
+            parsed.tz_convert("Asia/Kuala_Lumpur").strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            if pd.notna(parsed) else "—"
+        )
+
+    def snapshot_dict(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return {}
+
+    reports["_created"] = pd.to_datetime(
+        reports.get("created_at"), errors="coerce", utc=True
+    )
+    reports = reports.sort_values("_created", ascending=False)
+    summary_rows: list[dict[str, Any]] = []
+    for _, report in reports.iterrows():
+        snapshot = snapshot_dict(report.get("question_snapshot"))
+        summary_rows.append({
+            "Report ID": int(report["id"]),
+            "Submitted": local_time(report.get("created_at")),
+            "Status": str(report.get("status") or "pending").upper(),
+            "Chapter": f"C{report.get('chapter')}",
+            "Reason": str(report.get("report_reason") or "").replace(
+                "_", " "
+            ).title(),
+            "Question": str(
+                snapshot.get("question")
+                or snapshot.get("question_text")
+                or "Unavailable"
+            ),
+            "Resolved": local_time(report.get("reviewed_at")),
+            "Original correct": report.get("original_correct_count"),
+            "Corrected correct": report.get("corrected_correct_count"),
+            "Original XP": report.get("original_xp"),
+            "Corrected XP": report.get("corrected_xp"),
+        })
+    summary = pd.DataFrame(summary_rows)
+    st.dataframe(
+        summary.drop(columns=["Report ID"]),
+        hide_index=True,
+        width="stretch",
+    )
+
+    st.subheader("REPORT DETAILS")
+    answer_letters = ("A", "B", "C", "D")
+    for _, report in reports.iterrows():
+        snapshot = snapshot_dict(report.get("question_snapshot"))
+        status = str(report.get("status") or "pending").upper()
+        report_id = int(report["id"])
+        with st.expander(
+            f"{status} · C{report.get('chapter')} · REPORT {report_id}"
+        ):
+            st.markdown(str(
+                snapshot.get("question")
+                or snapshot.get("question_text")
+                or "Unavailable"
+            ))
+            options = snapshot.get("options") or []
+            if isinstance(options, str):
+                try:
+                    options = json.loads(options)
+                except json.JSONDecodeError:
+                    options = []
+            for index, option in enumerate(options[:4]):
+                st.markdown(f"**{answer_letters[index]}.** {option}")
+            student_answer = report.get("student_answer")
+            student_letter = (
+                answer_letters[int(student_answer)]
+                if pd.notna(student_answer) and 0 <= int(student_answer) < 4
+                else "—"
+            )
+            st.markdown(f"**Your answer:** {student_letter}")
+            st.markdown(
+                f"**Report reason:** {str(report.get('report_reason') or '').replace('_', ' ').title()}"
+            )
+            if report.get("student_notes"):
+                st.markdown(f"**Your notes:** {report.get('student_notes')}")
+            if status == "PENDING":
+                st.info("Your report is waiting for Admin review.")
+            else:
+                st.markdown(f"**Admin decision:** {status}")
+                st.markdown(
+                    f"**Resolved at:** {local_time(report.get('reviewed_at'))}"
+                )
+                st.markdown(
+                    f"**Admin notes:** {report.get('admin_notes') or '—'}"
+                )
+                result_table = pd.DataFrame([
+                    {
+                        "Result": "Correct answers",
+                        "Before": report.get("original_correct_count"),
+                        "After": report.get("corrected_correct_count"),
+                    },
+                    {
+                        "Result": "Quiz XP",
+                        "Before": report.get("original_xp"),
+                        "After": report.get("corrected_xp"),
+                    },
+                ])
+                st.dataframe(result_table, hide_index=True, width="stretch")
+
+
 def quiz_page() -> None:
     heading("", "Chapter Quiz")
-    daily_tab, history_tab = st.tabs(["DAILY QUIZ", "QUIZ HISTORY"])
+    daily_tab, history_tab, reports_tab = st.tabs([
+        "DAILY QUIZ", "QUIZ HISTORY", "MY QUESTION REPORTS",
+    ])
     with daily_tab:
         render_daily_quiz_tab()
     with history_tab:
@@ -7485,6 +7621,8 @@ def quiz_page() -> None:
             "Only incorrect answers from quiz sets completed today are shown."
         )
         render_quiz_history_tab()
+    with reports_tab:
+        render_student_question_reports()
 
 
 def _legacy_award_xp_page() -> None:
