@@ -3948,15 +3948,23 @@ def battle_leaderboard_data(
 
 def daily_battle_champions_data() -> pd.DataFrame:
     """Return one Battle champion for every local calendar day."""
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date()
+    pending_today = {
+        "Date": today.strftime("%Y-%m-%d"),
+        "Day": today.strftime("%A"),
+        "Champion": "PENDING",
+        "Note": "",
+        "Player ID": "",
+    }
     matches, _ = fetch_table("battle_matches", pd.DataFrame())
     if matches.empty:
-        return pd.DataFrame()
+        return pd.DataFrame([pending_today])
     status = matches.get(
         "status", pd.Series("", index=matches.index)
     ).fillna("").astype(str).str.lower()
     completed = matches[status.eq("completed")].copy()
     if completed.empty:
-        return pd.DataFrame()
+        return pd.DataFrame([pending_today])
     completed_time = pd.to_datetime(
         completed.get(
             "completed_at", pd.Series(pd.NaT, index=completed.index)
@@ -3974,10 +3982,13 @@ def daily_battle_champions_data() -> pd.DataFrame:
     ).dt.date
     completed = completed[completed["_battle_date"].notna()]
     if completed.empty:
-        return pd.DataFrame()
+        return pd.DataFrame([pending_today])
     labels, details = battle_student_directory()
     champions: list[dict[str, Any]] = []
     for battle_date, daily_matches in completed.groupby("_battle_date"):
+        # Today's standings remain provisional until the local day ends.
+        if battle_date >= today:
+            continue
         standings = battle_leaderboard_data(daily_matches, labels, details)
         if standings.empty:
             continue
@@ -3993,9 +4004,10 @@ def daily_battle_champions_data() -> pd.DataFrame:
             ),
             "Player ID": str(champion["Player ID"]),
         })
+    champions.append(pending_today)
     return pd.DataFrame(champions).sort_values(
         "Date", ascending=False
-    ).reset_index(drop=True) if champions else pd.DataFrame()
+    ).reset_index(drop=True)
 
 
 def battle_champions_page() -> None:
