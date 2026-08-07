@@ -4979,16 +4979,7 @@ def render_quiz_question_reports() -> None:
         st.info("No quiz question report has been submitted.")
         return
 
-    status_filter = st.segmented_control(
-        "Report status",
-        ["pending", "accepted", "rejected", "all"],
-        default="pending",
-        format_func=str.upper,
-        key="quiz_report_status_filter",
-    )
-    shown = reports
-    if status_filter != "all":
-        shown = reports[reports["status"] == status_filter]
+    shown = reports[reports["status"] == "pending"].copy()
     keyword = st.text_input(
         "Search reports",
         placeholder="Search student, NO MATRIK, chapter, reason or question…",
@@ -5235,6 +5226,97 @@ def render_quiz_question_reports() -> None:
                             st.error(f"Question report could not be resolved: {exc}")
 
 
+def render_resolved_quiz_reports() -> None:
+    """Read-only audit list of reports already resolved by an Admin."""
+    client = db()
+    if not client:
+        st.info("Resolved reports are unavailable in demo mode.")
+        return
+    try:
+        rows = (
+            client.table("quiz_question_reports")
+            .select("*")
+            .in_("status", ["accepted", "rejected"])
+            .order("reviewed_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        st.warning(
+            "Run supabase_migration_021_quiz_question_reports.sql to enable "
+            "resolved report history."
+        )
+        return
+    reports = pd.DataFrame(rows)
+    if reports.empty:
+        st.info("No resolved quiz question report is available.")
+        return
+
+    keyword = st.text_input(
+        "Search resolved reports",
+        placeholder="Search student, NO MATRIK, chapter, outcome or question…",
+        key="resolved_quiz_report_keyword",
+    ).strip().lower()
+    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+    identity_map: dict[str, dict[str, str]] = {}
+    if not background.empty and "NO MATRIK" in background.columns:
+        for _, student in background.drop_duplicates("NO MATRIK").iterrows():
+            matric = str(student.get("NO MATRIK") or "")
+            identity_map[matric] = {
+                "name": str(
+                    student.get("NICKNAME PELAJAR")
+                    or student.get("NAMA PELAJAR")
+                    or "UNKNOWN"
+                ).upper(),
+                "class": str(student.get("KELAS") or "UNASSIGNED").upper(),
+            }
+
+    def question_text(snapshot: Any) -> str:
+        value = snapshot
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return value
+        if isinstance(value, dict):
+            return str(value.get("question_text") or value.get("question") or "")
+        return ""
+
+    display_rows: list[dict[str, Any]] = []
+    for _, report in reports.iterrows():
+        matric = str(report.get("NO MATRIK") or "")
+        identity = identity_map.get(matric, {})
+        reviewed = pd.to_datetime(report.get("reviewed_at"), errors="coerce", utc=True)
+        reviewed_text = (
+            reviewed.tz_convert("Asia/Kuala_Lumpur").strftime("%Y-%m-%d %H:%M:%S")
+            if pd.notna(reviewed) else "—"
+        )
+        display_rows.append({
+            "Resolved at": reviewed_text,
+            "Outcome": str(report.get("status") or "").upper(),
+            "Student": identity.get("name", "UNKNOWN"),
+            "Class": identity.get("class", "UNASSIGNED"),
+            "NO MATRIK": matric,
+            "Chapter": f"C{report.get('chapter')}",
+            "Reason": str(report.get("report_reason") or "").replace("_", " ").title(),
+            "Question": question_text(report.get("question_snapshot")),
+            "Original correct": report.get("original_correct_count"),
+            "Corrected correct": report.get("corrected_correct_count"),
+            "Original XP": report.get("original_xp"),
+            "Corrected XP": report.get("corrected_xp"),
+            "Admin notes": str(report.get("admin_notes") or ""),
+        })
+    display = pd.DataFrame(display_rows)
+    if keyword:
+        searchable = display.astype(str).agg(" ".join, axis=1).str.lower()
+        display = display[searchable.str.contains(keyword, regex=False)]
+    if display.empty:
+        st.info("No resolved report matches the search.")
+    else:
+        st.dataframe(display, hide_index=True, width="stretch")
+
+
 def admin_quiz_page() -> None:
     heading(
         "Assessment builder",
@@ -5243,12 +5325,13 @@ def admin_quiz_page() -> None:
     )
     (
         generation_tab, draft_review_tab, published_review_tab,
-        reports_tab, library_tab,
+        reports_tab, resolved_reports_tab, library_tab,
     ) = st.tabs([
         "QUIZ GENERATION",
         "QUESTION DRAFT REVIEW",
         "QUESTION BANK REVIEW",
         "QUESTION REPORTS",
+        "RESOLVED REPORTS",
         "QUIZ LIBRARY",
     ])
     generation_tab.__enter__()
@@ -5793,6 +5876,9 @@ def admin_quiz_page() -> None:
     reports_tab.__enter__()
     render_quiz_question_reports()
     reports_tab.__exit__(None, None, None)
+    resolved_reports_tab.__enter__()
+    render_resolved_quiz_reports()
+    resolved_reports_tab.__exit__(None, None, None)
     library_tab.__enter__()
     if quiz_live:
         try:
