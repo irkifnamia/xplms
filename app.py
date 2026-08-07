@@ -327,6 +327,10 @@ h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; 
   border-color:#c62828 !important; color:#fff !important; font-weight:800 !important; }
 [class*="st-key-leave_battle_"] button:hover { background:#a71919 !important;
   border-color:#a71919 !important; }
+[class*="st-key-cancel_challenge_"] button { background:#c62828 !important;
+  border-color:#c62828 !important; color:#fff !important; font-weight:800 !important; }
+[class*="st-key-cancel_challenge_"] button:hover { background:#a71919 !important;
+  border-color:#a71919 !important; }
 [data-testid="stTable"] td,[data-testid="stTable"] th { white-space:normal !important;
   overflow-wrap:anywhere !important; vertical-align:top !important; }
 .hero h1 {
@@ -6601,16 +6605,32 @@ def battle_live_panel(user: dict[str, Any], mode_status: dict[str, Any]) -> None
                         st.rerun()
 
         if outgoing:
-            st.caption(
-                "WAITING FOR · " + ", ".join(
-                    labels.get(str(row["opponent_id"]), str(row["opponent_id"]))
-                    for row in outgoing
-                )
-            )
+            for challenge in outgoing:
+                opponent_id = str(challenge["opponent_id"])
+                with st.container(border=True, horizontal=True):
+                    st.markdown(
+                        "**WAITING FOR · "
+                        f"{labels.get(opponent_id, opponent_id)}**"
+                    )
+                    if st.button(
+                        "CANCEL CHALLENGE",
+                        key=f"cancel_challenge_{challenge['id']}",
+                        type="primary",
+                        disabled=preview,
+                    ):
+                        try:
+                            client.rpc("cancel_battle_challenge", {
+                                "p_challenge_id": str(challenge["id"]),
+                                "p_challenger_id": user_id,
+                            }).execute()
+                            st.success("Challenge cancelled.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Challenge could not be cancelled: {exc}")
         if received or outgoing:
             st.info(
-                "Only one opponent can be challenged at a time. Accept, reject, "
-                "or wait for the current challenge before selecting another student."
+                "Only one opponent can be challenged at a time. A sent challenge "
+                "can be cancelled before the opponent responds."
             )
         else:
             online_cutoff = datetime.now(ZoneInfo("UTC")) - timedelta(seconds=90)
