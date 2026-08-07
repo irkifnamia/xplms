@@ -7396,6 +7396,12 @@ def award_xp_page() -> None:
                 (st.success if notice_type == "success" else st.warning)(
                     notice_text
                 )
+            claim_review_form = st.form(
+                "xp_claim_review_form",
+                clear_on_submit=False,
+                border=False,
+            )
+            claim_review_form.__enter__()
             selected_claims: list[tuple[pd.Series, int]] = []
             for _, claim in claims.iterrows():
                 if int(claim["id"]) in st.session_state.get(
@@ -7461,9 +7467,14 @@ def award_xp_page() -> None:
                     )
                     note = st.text_input("Admin note", key=f"tab_claim_note_{claim['id']}")
                     approve, reject = st.columns(2)
-                    if approve.button("Approve", type="primary", key=f"tab_approve_{claim['id']}"):
+                    if approve.form_submit_button(
+                        "Approve", type="primary",
+                        key=f"tab_approve_{claim['id']}",
+                    ):
                         approve_pending_claim(claim, int(approval_points), note)
-                    if reject.button("Reject", key=f"tab_reject_{claim['id']}"):
+                    if reject.form_submit_button(
+                        "Reject", key=f"tab_reject_{claim['id']}"
+                    ):
                         if not claims_live:
                             st.info("Demo request rejected.")
                         else:
@@ -7493,14 +7504,16 @@ def award_xp_page() -> None:
                         selected_claims.append((claim, int(approval_points)))
 
             selected_count = len(selected_claims)
-            st.caption(f"{selected_count} request(s) selected")
+            st.caption(
+                "Select the requests you want, then apply one batch action. "
+                "Selections do not refresh the page."
+            )
             batch_approve, batch_reject = st.columns(2)
-            if batch_approve.button(
+            if batch_approve.form_submit_button(
                 "Approve selected",
                 type="primary",
-                disabled=selected_count == 0,
                 width="stretch",
-            ):
+            ) and selected_count > 0:
                 approved = 0
                 failed = 0
                 for selected_claim, selected_points in selected_claims:
@@ -7519,11 +7532,10 @@ def award_xp_page() -> None:
                     + " Refresh when you want to reload the list."
                 )
                 (st.success if failed == 0 else st.warning)(message)
-            if batch_reject.button(
+            if batch_reject.form_submit_button(
                 "Reject selected",
-                disabled=selected_count == 0,
                 width="stretch",
-            ):
+            ) and selected_count > 0:
                 selected_ids = [
                     int(selected_claim["id"])
                     for selected_claim, _ in selected_claims
@@ -7544,6 +7556,7 @@ def award_xp_page() -> None:
                     )
                 except Exception as exc:
                     st.error(f"Selected requests could not be rejected: {exc}")
+            claim_review_form.__exit__(None, None, None)
     with records_tab:
         if events.empty or "id" not in events.columns:
             st.info("No XP records are available.")
