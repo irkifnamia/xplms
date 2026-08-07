@@ -3889,11 +3889,64 @@ def student_leaderboard_context() -> dict[str, Any]:
     }
 
 
+def battle_leaderboard_data(
+    matches: pd.DataFrame | None = None,
+    labels: dict[str, str] | None = None,
+    details: dict[str, dict[str, str]] | None = None,
+) -> pd.DataFrame:
+    """Build the shared Admin/Student Battle standings."""
+    if matches is None:
+        matches, _ = fetch_table("battle_matches", pd.DataFrame())
+    if labels is None or details is None:
+        labels, details = battle_student_directory()
+    if matches.empty:
+        return pd.DataFrame()
+    status = matches.get(
+        "status", pd.Series("", index=matches.index)
+    ).fillna("").astype(str).str.lower()
+    completed = matches[status.eq("completed")]
+    if completed.empty:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for _, match in completed.iterrows():
+        winner = str(match.get("winner_id") or "")
+        for side in ("a", "b"):
+            player_id = str(match.get(f"player_{side}_id") or "")
+            identity = details.get(player_id, {})
+            rows.append({
+                "Player ID": player_id,
+                "Player": identity.get("name", labels.get(player_id, "—")),
+                "Class": identity.get("class", "—"),
+                "Battles": 1,
+                "Wins": int(bool(winner) and winner == player_id),
+                "Draws": int(not winner),
+                "Question wins": int(match.get(f"player_{side}_wins") or 0),
+                "Battle XP": int(match.get(f"player_{side}_xp") or 0),
+            })
+    standings = pd.DataFrame(rows).groupby(
+        ["Player ID", "Player", "Class"], dropna=False
+    ).agg(
+        Battles=("Battles", "sum"),
+        Wins=("Wins", "sum"),
+        Draws=("Draws", "sum"),
+        **{
+            "Question wins": ("Question wins", "sum"),
+            "Battle XP": ("Battle XP", "sum"),
+        },
+    ).reset_index()
+    standings = standings.sort_values(
+        ["Wins", "Draws", "Battle XP", "Battles", "Player"],
+        ascending=[False, False, False, False, True],
+    ).reset_index(drop=True)
+    standings.insert(0, "Rank", range(1, len(standings) + 1))
+    return standings
+
+
 def student_leaderboard_one_page() -> None:
     heading("", "Leaderboard 1")
     ctx = student_leaderboard_context()
-    test_tab, xp_tab, streak_tab, badge_tab, team_tab = st.tabs([
-        "TEST", "XP", "STREAK", "BADGE", "XP (TEAM)",
+    test_tab, xp_tab, streak_tab, badge_tab, battle_tab, team_tab = st.tabs([
+        "TEST", "XP", "STREAK", "BADGE", "BATTLE", "XP (TEAM)",
     ])
     with test_tab:
         selected_class = st.selectbox(
@@ -4016,6 +4069,19 @@ def student_leaderboard_one_page() -> None:
             st.dataframe(
                 highlight_current_rows(display.drop(columns=["NO MATRIK"]), mask),
                 hide_index=True, width="stretch",
+            )
+    with battle_tab:
+        standings = battle_leaderboard_data()
+        if standings.empty:
+            st.info("Battle leaderboard is not available.")
+        else:
+            current_player_id = str(current_user().get("id") or "")
+            mask = standings["Player ID"].astype(str) == current_player_id
+            display = standings.drop(columns=["Player ID"])
+            st.dataframe(
+                highlight_current_rows(display, mask),
+                hide_index=True,
+                width="stretch",
             )
     with team_tab:
         selected_class = st.selectbox(
@@ -8453,7 +8519,7 @@ def analysis_battle_page() -> None:
         metric("Battle XP awarded", f"{total_xp:,}")
 
     overview_tab, performance_tab, players_tab = st.tabs([
-        "OVERVIEW", "QUESTION PERFORMANCE", "PLAYER ENGAGEMENT"
+        "OVERVIEW", "QUESTION PERFORMANCE", "BATTLE LEADERBOARD"
     ])
     with overview_tab:
         status_rows = pd.DataFrame([
@@ -8523,7 +8589,7 @@ def analysis_battle_page() -> None:
             st.dataframe(summary, hide_index=True, width="stretch")
     with players_tab:
         if completed.empty:
-            st.info("No completed Battle engagement is available.")
+            st.info("No completed Battle leaderboard is available.")
         else:
             rows: list[dict[str, Any]] = []
             for _, match in completed.iterrows():
@@ -8547,7 +8613,8 @@ def analysis_battle_page() -> None:
                 Draws=("Draws", "sum"),
                 **{"Question wins": ("Question wins", "sum"), "Battle XP": ("XP", "sum")},
             ).reset_index().sort_values(
-                ["Wins", "Question wins", "Battle XP"], ascending=False
+                ["Wins", "Draws", "Battle XP", "Battles", "Player"],
+                ascending=[False, False, False, False, True],
             )
             standings.insert(0, "Rank", range(1, len(standings) + 1))
             st.dataframe(standings, hide_index=True, width="stretch")
