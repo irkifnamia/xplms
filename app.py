@@ -4010,12 +4010,53 @@ def daily_battle_champions_data() -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def today_battle_leaderboard_data() -> pd.DataFrame:
+    """Return provisional Battle standings for the current Malaysia day."""
+    matches, _ = fetch_table("battle_matches", pd.DataFrame())
+    if matches.empty:
+        return pd.DataFrame()
+    status = matches.get(
+        "status", pd.Series("", index=matches.index)
+    ).fillna("").astype(str).str.lower()
+    completed = matches[status.eq("completed")].copy()
+    if completed.empty:
+        return pd.DataFrame()
+    completed_time = pd.to_datetime(
+        completed.get(
+            "completed_at", pd.Series(pd.NaT, index=completed.index)
+        ),
+        errors="coerce",
+        utc=True,
+    )
+    if "started_at" in completed.columns:
+        completed_time = completed_time.fillna(pd.to_datetime(
+            completed["started_at"], errors="coerce", utc=True
+        ))
+    local_dates = completed_time.dt.tz_convert("Asia/Kuala_Lumpur").dt.date
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date()
+    today_matches = completed[local_dates.eq(today)].copy()
+    return battle_leaderboard_data(today_matches)
+
+
 def battle_champions_page() -> None:
     heading("", "Battle Champions")
-    list_tab, badges_tab = st.tabs([
-        "CHAMPIONS LIST", "MY CHAMPION BADGES",
+    today_tab, list_tab, badges_tab = st.tabs([
+        "TODAY", "CHAMPIONS LIST", "MY CHAMPION BADGES",
     ])
     champions = daily_battle_champions_data()
+    with today_tab:
+        standings = today_battle_leaderboard_data()
+        if standings.empty:
+            st.info("No completed Battle is recorded for today yet.")
+        else:
+            current_player_id = str(current_user().get("id") or "")
+            mask = standings["Player ID"].astype(str) == current_player_id
+            display = standings.drop(columns=["Player ID"])
+            st.dataframe(
+                highlight_current_rows(display, mask),
+                hide_index=True,
+                width="stretch",
+            )
     with list_tab:
         if champions.empty:
             st.info("No daily Battle champion is available yet.")
