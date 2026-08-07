@@ -4045,6 +4045,12 @@ def battle_champions_page() -> None:
     ])
     champions = daily_battle_champions_data()
     with today_tab:
+        local_today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur"))
+        st.markdown(
+            f"**DATE:** {local_today.strftime('%Y-%m-%d')}  "
+            f"&nbsp;&nbsp; **DAY:** {local_today.strftime('%A').upper()}",
+            unsafe_allow_html=True,
+        )
         standings = today_battle_leaderboard_data()
         if standings.empty:
             st.info("No completed Battle is recorded for today yet.")
