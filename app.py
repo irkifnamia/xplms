@@ -7209,11 +7209,8 @@ def award_xp_page() -> None:
         st.session_state.pop("award_xp_snapshot", None)
         st.session_state.pop("xp_review_processed", None)
         invalidate_table_cache(
-            "stud_background", "stud_progress", "stud_xp", "xp_rules",
-            "xp_events", "xp_claims", "student_badges",
-            "student_activity_days",
+            "stud_background", "xp_rules", "xp_events", "xp_claims",
         )
-        st.rerun()
     rules_fallback = pd.DataFrame([
         {"code": "consultation", "name": "Consultation", "default_points": 15},
         {"code": "class_participation", "name": "Class participation", "default_points": 10},
@@ -7232,10 +7229,30 @@ def award_xp_page() -> None:
     }])
     snapshot = st.session_state.get("award_xp_snapshot")
     if snapshot is None:
-        students, students_live = merged_students()
+        # This page only needs student identity fields. Avoid merging the full
+        # progress and XP tables every time the Admin requests fresh data.
+        students, students_live = fetch_table("stud_background", DEMO_STUDENTS)
         rules, rules_live = fetch_table("xp_rules", rules_fallback)
-        events, events_live = fetch_table("xp_events", events_fallback)
-        claims, claims_live = fetch_table("xp_claims", claims_fallback)
+        if is_demo() or not db():
+            events, events_live = events_fallback.copy(), False
+            claims, claims_live = claims_fallback.copy(), False
+        else:
+            try:
+                event_rows = _cached_filtered_rows(
+                    "xp_events", "award_mode", "manual"
+                )
+                events = pd.DataFrame(event_rows)
+                events_live = True
+            except Exception:
+                events, events_live = fetch_table("xp_events", events_fallback)
+            try:
+                claim_rows = _cached_filtered_rows(
+                    "xp_claims", "status", "pending"
+                )
+                claims = pd.DataFrame(claim_rows)
+                claims_live = True
+            except Exception:
+                claims, claims_live = fetch_table("xp_claims", claims_fallback)
         snapshot = {
             "students": students.copy(), "students_live": students_live,
             "rules": rules.copy(), "rules_live": rules_live,
@@ -9545,9 +9562,7 @@ def main() -> None:
         st.session_state.pop("award_xp_snapshot", None)
         st.session_state.pop("xp_review_processed", None)
         invalidate_table_cache(
-            "stud_background", "stud_progress", "stud_xp", "xp_rules",
-            "xp_events", "xp_claims", "student_badges",
-            "student_activity_days",
+            "stud_background", "xp_rules", "xp_events", "xp_claims",
         )
     st.session_state.previous_route_token = route_token
     if role == "Student":
