@@ -5829,7 +5829,7 @@ def render_quiz_question_reporting(
                             ),
                             "explanation": question.get("explanation"),
                         }
-                        client.table("quiz_question_reports").insert({
+                        report_payload = {
                             "attempt_id": int(attempt_id),
                             "question_id": question_id,
                             "student_user_id": current_user()["id"],
@@ -5839,16 +5839,16 @@ def render_quiz_question_reporting(
                             "question_snapshot": snapshot,
                             "report_reason": reason_options[reason_label],
                             "student_notes": notes.strip() or None,
-                            "supporting_file_path": supporting_path,
-                            "supporting_file_name": (
-                                supporting_file.name
-                                if supporting_file is not None else None
-                            ),
-                            "supporting_file_type": (
-                                supporting_file.type
-                                if supporting_file is not None else None
-                            ),
-                        }).execute()
+                        }
+                        if supporting_file is not None:
+                            report_payload.update({
+                                "supporting_file_path": supporting_path,
+                                "supporting_file_name": supporting_file.name,
+                                "supporting_file_type": supporting_file.type,
+                            })
+                        client.table("quiz_question_reports").insert(
+                            report_payload
+                        ).execute()
                         invalidate_table_cache("quiz_question_reports")
                         st.success("Question report submitted for Admin review.")
                         st.rerun()
@@ -5860,7 +5860,20 @@ def render_quiz_question_reporting(
                                 ).remove([supporting_path])
                             except Exception:
                                 pass
-                        st.error(f"Question report could not be submitted: {exc}")
+                        error_text = str(exc)
+                        if (
+                            "supporting_file_" in error_text
+                            and "schema cache" in error_text.lower()
+                        ):
+                            st.error(
+                                "Question-report attachment fields are not configured. "
+                                "Ask the administrator to run "
+                                "supabase_migration_031_quiz_report_attachment_columns.sql."
+                            )
+                        else:
+                            st.error(
+                                f"Question report could not be submitted: {exc}"
+                            )
 
 
 def battle_student_directory() -> tuple[dict[str, str], dict[str, dict[str, str]]]:
