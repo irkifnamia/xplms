@@ -58,6 +58,10 @@ DAILY_QUIZ_DISTRIBUTION = {"easy": 2, "medium": 4, "hard": 4}
 LOGO_PATH = Path(__file__).parent / "assets" / "xplms-logo.png"
 AFJ_LOGO_PATH = Path(__file__).parent / "assets" / "afj.jpeg"
 BADGE_ASSET_DIR = Path(__file__).parent / "assets" / "badges"
+CHAMPION_BADGE_PATH = BADGE_ASSET_DIR / "battle-champion.png"
+CHAMPION_BADGE_DATA = base64.b64encode(
+    CHAMPION_BADGE_PATH.read_bytes()
+).decode("ascii")
 BADGE_IMAGE_PATHS = {
     "xp": {
         "Rookie": BADGE_ASSET_DIR / "xp-rookie.png",
@@ -1703,7 +1707,7 @@ def sidebar(role: str, name: str) -> str:
         menus = {
             "Student": [
                 "Profile", "Materials", "Results", "Leaderboard 1",
-                "Leaderboard 2", "Quiz", "Battle",
+                "Leaderboard 2", "Quiz", "Battle", "Battle Champions",
                 "XP: Journey", "XP: SOP", "XP: Request",
             ],
             "Admin": [
@@ -1751,7 +1755,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
     menus = {
         "Student": [
             "Profile", "Materials", "Results", "Leaderboard 1",
-            "Leaderboard 2", "Quiz", "Battle",
+            "Leaderboard 2", "Quiz", "Battle", "Battle Champions",
             "XP: Journey", "XP: SOP", "XP: Request",
         ],
         "Admin": [
@@ -3940,6 +3944,114 @@ def battle_leaderboard_data(
     ).reset_index(drop=True)
     standings.insert(0, "Rank", range(1, len(standings) + 1))
     return standings
+
+
+def daily_battle_champions_data() -> pd.DataFrame:
+    """Return one Battle champion for every local calendar day."""
+    matches, _ = fetch_table("battle_matches", pd.DataFrame())
+    if matches.empty:
+        return pd.DataFrame()
+    status = matches.get(
+        "status", pd.Series("", index=matches.index)
+    ).fillna("").astype(str).str.lower()
+    completed = matches[status.eq("completed")].copy()
+    if completed.empty:
+        return pd.DataFrame()
+    completed_time = pd.to_datetime(
+        completed.get(
+            "completed_at", pd.Series(pd.NaT, index=completed.index)
+        ),
+        errors="coerce",
+        utc=True,
+    )
+    if "started_at" in completed.columns:
+        started_time = pd.to_datetime(
+            completed["started_at"], errors="coerce", utc=True
+        )
+        completed_time = completed_time.fillna(started_time)
+    completed["_battle_date"] = completed_time.dt.tz_convert(
+        "Asia/Kuala_Lumpur"
+    ).dt.date
+    completed = completed[completed["_battle_date"].notna()]
+    if completed.empty:
+        return pd.DataFrame()
+    labels, details = battle_student_directory()
+    champions: list[dict[str, Any]] = []
+    for battle_date, daily_matches in completed.groupby("_battle_date"):
+        standings = battle_leaderboard_data(daily_matches, labels, details)
+        if standings.empty:
+            continue
+        champion = standings.iloc[0]
+        day_name = battle_date.strftime("%A")
+        champions.append({
+            "Date": battle_date.strftime("%Y-%m-%d"),
+            "Day": day_name,
+            "Champion": champion["Player"],
+            "Note": (
+                "CLAIM REWARD - ADMIN CAFE"
+                if day_name in {"Sunday", "Tuesday"} else ""
+            ),
+            "Player ID": str(champion["Player ID"]),
+        })
+    return pd.DataFrame(champions).sort_values(
+        "Date", ascending=False
+    ).reset_index(drop=True) if champions else pd.DataFrame()
+
+
+def battle_champions_page() -> None:
+    heading("", "Battle Champions")
+    list_tab, badges_tab = st.tabs([
+        "CHAMPIONS LIST", "MY CHAMPION BADGES",
+    ])
+    champions = daily_battle_champions_data()
+    with list_tab:
+        if champions.empty:
+            st.info("No daily Battle champion is available yet.")
+        else:
+            st.dataframe(
+                champions[["Date", "Day", "Champion", "Note"]],
+                hide_index=True,
+                width="stretch",
+            )
+    with badges_tab:
+        current_player_id = str(current_user().get("id") or "")
+        mine = (
+            champions[
+                champions["Player ID"].astype(str) == current_player_id
+            ].copy()
+            if not champions.empty else pd.DataFrame()
+        )
+        if mine.empty:
+            st.info("You have not earned a Battle Champion badge yet.")
+        else:
+            badge_cards = "".join(
+                '<article class="champion-badge-card">'
+                '<div class="champion-badge-art" role="img" '
+                'aria-label="Battle Champion badge"></div>'
+                f'<div class="champion-badge-date">{html.escape(str(row["Date"]))}</div>'
+                f'<div class="champion-badge-day">{html.escape(str(row["Day"]).upper())}</div>'
+                '</article>'
+                for _, row in mine.iterrows()
+            )
+            st.markdown(
+                '<style>'
+                '.champion-badge-grid{display:grid;'
+                'grid-template-columns:repeat(auto-fit,minmax(150px,1fr));'
+                'gap:14px;margin:.5rem 0 1rem}'
+                '.champion-badge-card{background:#fff;border:1px solid #cbd9e9;'
+                'border-top:4px solid #6d3bb1;border-radius:16px;padding:12px;'
+                'text-align:center;box-shadow:0 6px 18px rgba(25,64,115,.09)}'
+                '.champion-badge-art{width:min(100%,180px);aspect-ratio:1;'
+                'margin:0 auto 9px;background-size:contain;background-position:center;'
+                'background-repeat:no-repeat;filter:drop-shadow(0 5px 8px rgba(18,44,84,.18));'
+                f'background-image:url("data:image/png;base64,{CHAMPION_BADGE_DATA}")}}'
+                '.champion-badge-date{font-weight:800;color:#17233a;font-size:.92rem}'
+                '.champion-badge-day{color:#64748b;font-size:.76rem;letter-spacing:.08em;'
+                'font-weight:700;margin-top:2px}'
+                '</style>'
+                f'<div class="champion-badge-grid">{badge_cards}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def student_leaderboard_one_page() -> None:
@@ -9647,6 +9759,7 @@ def main() -> None:
             "Materials": materials_page,
             "Quiz": quiz_page,
             "Battle": battle_page,
+            "Battle Champions": battle_champions_page,
             "XP: Journey": my_xp_page,
             "XP: SOP": lambda: sop_page("XP: SOP"),
             "Leaderboard 1": student_leaderboard_one_page,
