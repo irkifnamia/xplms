@@ -6463,12 +6463,7 @@ def battle_page() -> None:
     battle_live_panel(user, xp_mode_status(user))
 
 
-def quiz_page() -> None:
-    heading(
-        "Daily knowledge check",
-        "Chapter quiz",
-        "Answer 10 random questions per chapter each day and earn automatic XP.",
-    )
+def render_daily_quiz_tab() -> None:
     user = current_user()
     mode_status = xp_mode_status(user)
     today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
@@ -6529,12 +6524,7 @@ def quiz_page() -> None:
             f"Student preview result: {preview_correct}/10 correct · "
             f"{preview_xp} XP simulated. Supabase was not changed."
         )
-        render_incorrect_quiz_answers(
-            preview_questions, preview_answers
-        )
-        render_quiz_question_reporting(
-            0, preview_questions, preview_answers, int(chapter)
-        )
+        st.info("Open QUIZ HISTORY to review incorrect answers and test reporting.")
         if st.button("Reset preview attempt", key="reset_preview_quiz"):
             st.session_state.pop("preview_quiz_result", None)
             st.rerun()
@@ -6574,48 +6564,7 @@ def quiz_page() -> None:
                 f"{int(result['correct_count'])}/{int(result['total_questions'])} correct · "
                 f"{int(result['xp_awarded'])} XP awarded."
             )
-            saved_answers = result.get("answers") or {}
-            if isinstance(saved_answers, str):
-                try:
-                    saved_answers = json.loads(saved_answers)
-                except json.JSONDecodeError:
-                    saved_answers = {}
-            if isinstance(saved_answers, dict) and saved_answers:
-                saved_snapshot = result.get("question_snapshot") or []
-                if isinstance(saved_snapshot, str):
-                    try:
-                        saved_snapshot = json.loads(saved_snapshot)
-                    except json.JSONDecodeError:
-                        saved_snapshot = []
-                review_questions = (
-                    saved_snapshot if isinstance(saved_snapshot, list) else []
-                )
-                question_ids = [
-                    int(question_id) for question_id in saved_answers
-                    if str(question_id).isdigit()
-                ]
-                if not review_questions and question_ids:
-                    review_questions = (
-                        client.table("quiz_questions")
-                        .select(
-                            "id,quiz_id,position,difficulty,question,options,"
-                            "correct_index,explanation"
-                        )
-                        .in_("id", question_ids)
-                        .execute()
-                        .data
-                        or []
-                    )
-                if review_questions:
-                    render_incorrect_quiz_answers(
-                        review_questions, saved_answers
-                    )
-                    render_quiz_question_reporting(
-                        int(result["id"]),
-                        review_questions,
-                        saved_answers,
-                        int(chapter),
-                    )
+            st.info("Open QUIZ HISTORY to review incorrect answers and report a question.")
             return
         if not mode_status["allowed"]:
             st.error(
@@ -6947,6 +6896,135 @@ def quiz_page() -> None:
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Quiz result could not be saved: {exc}")
+
+
+def incorrect_quiz_questions(
+    questions: list[dict[str, Any]], answers: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Return only questions answered incorrectly in a saved attempt."""
+    incorrect: list[dict[str, Any]] = []
+    for question in questions:
+        question_id = str(question.get("id"))
+        if question_id not in answers or answers[question_id] is None:
+            continue
+        try:
+            selected = int(answers[question_id])
+            correct = int(question.get("correct_index", 0))
+        except (TypeError, ValueError):
+            continue
+        if selected != correct:
+            incorrect.append(question)
+    return incorrect
+
+
+def render_quiz_history_tab() -> None:
+    """Show reportable incorrect answers from today's attempts only."""
+    user = current_user()
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
+    if is_admin_student_preview():
+        preview = st.session_state.get("preview_quiz_result")
+        attempts = []
+        if (
+            isinstance(preview, dict)
+            and str(preview.get("attempt_date")) == today
+        ):
+            attempts = [{
+                "id": 0,
+                "chapter": int(preview.get("chapter", 0)),
+                "correct_count": int(preview.get("correct", 0)),
+                "total_questions": len(preview.get("questions") or []),
+                "xp_awarded": int(preview.get("xp_awarded", 0)),
+                "answers": preview.get("answers") or {},
+                "question_snapshot": preview.get("questions") or [],
+            }]
+    else:
+        client = db()
+        if not client:
+            st.info("Quiz history requires the live Supabase database.")
+            return
+        try:
+            attempts = (
+                client.table("quiz_attempts")
+                .select(
+                    "id,chapter,correct_count,total_questions,xp_awarded,"
+                    "attempt_date,completed_at,answers,question_snapshot"
+                )
+                .eq("student_user_id", user["id"])
+                .eq("attempt_date", today)
+                .order("completed_at", desc=True)
+                .execute().data
+                or []
+            )
+        except Exception as exc:
+            st.error(f"Today's quiz history could not be loaded: {exc}")
+            return
+    if not attempts:
+        st.info("No completed quiz attempt is available for today.")
+        return
+    for attempt in attempts:
+        chapter = int(attempt.get("chapter") or 0)
+        answers = attempt.get("answers") or {}
+        if isinstance(answers, str):
+            try:
+                answers = json.loads(answers)
+            except json.JSONDecodeError:
+                answers = {}
+        answers = {
+            str(key): value for key, value in answers.items()
+        } if isinstance(answers, dict) else {}
+        questions = attempt.get("question_snapshot") or []
+        if isinstance(questions, str):
+            try:
+                questions = json.loads(questions)
+            except json.JSONDecodeError:
+                questions = []
+        questions = questions if isinstance(questions, list) else []
+        if not questions and answers and not is_admin_student_preview():
+            question_ids = [
+                int(question_id) for question_id in answers
+                if str(question_id).isdigit()
+            ]
+            if question_ids:
+                questions = (
+                    db().table("quiz_questions")
+                    .select(
+                        "id,quiz_id,position,difficulty,question,options,"
+                        "correct_index,explanation"
+                    )
+                    .in_("id", question_ids)
+                    .execute().data
+                    or []
+                )
+        incorrect = incorrect_quiz_questions(questions, answers)
+        with st.container(border=True):
+            st.subheader(f"C{chapter} · TODAY")
+            st.caption(
+                f"{int(attempt.get('correct_count') or 0)}/"
+                f"{int(attempt.get('total_questions') or len(questions))} correct · "
+                f"{int(attempt.get('xp_awarded') or 0)} XP"
+            )
+            if not incorrect:
+                st.success("No incorrect answers are available to review.")
+                continue
+            render_incorrect_quiz_answers(incorrect, answers)
+            render_quiz_question_reporting(
+                int(attempt.get("id") or 0),
+                incorrect,
+                answers,
+                chapter,
+            )
+
+
+def quiz_page() -> None:
+    heading("", "Chapter Quiz")
+    daily_tab, history_tab = st.tabs(["DAILY QUIZ", "QUIZ HISTORY"])
+    with daily_tab:
+        render_daily_quiz_tab()
+    with history_tab:
+        st.caption(
+            "Only incorrect answers from quiz sets completed today are shown."
+        )
+        render_quiz_history_tab()
 
 
 def _legacy_award_xp_page() -> None:
