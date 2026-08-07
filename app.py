@@ -7111,14 +7111,52 @@ def _legacy_award_xp_page() -> None:
 
 def award_xp_page() -> None:
     heading("", "Award XP")
-    students, students_live = merged_students()
+    if st.button("REFRESH AWARD XP", key="refresh_award_xp"):
+        st.session_state.pop("award_xp_snapshot", None)
+        st.session_state.pop("xp_review_processed", None)
+        invalidate_table_cache(
+            "stud_background", "stud_progress", "stud_xp", "xp_rules",
+            "xp_events", "xp_claims", "student_badges",
+            "student_activity_days",
+        )
+        st.rerun()
     rules_fallback = pd.DataFrame([
         {"code": "consultation", "name": "Consultation", "default_points": 15},
         {"code": "class_participation", "name": "Class participation", "default_points": 10},
         {"code": "commitment", "name": "Commitment", "default_points": 10},
         {"code": "quiz_correction", "name": "Quiz correction", "default_points": None},
     ])
-    rules, rules_live = fetch_table("xp_rules", rules_fallback)
+    events_fallback = pd.DataFrame([{
+        "id": 1, "NO MATRIK": "S24001", "rule_code": "consultation",
+        "points": 20, "reason": "Academic consultation",
+        "award_mode": "manual", "created_at": "2026-07-29T10:00:00+08:00",
+    }])
+    claims_fallback = pd.DataFrame([{
+        "id": 1, "NO MATRIK": "S24001", "claim_type": "study_group",
+        "title": "Algebra study group", "description": "Discussed equations.",
+        "proof_path": None, "status": "pending", "created_at": "2026-07-29",
+    }])
+    snapshot = st.session_state.get("award_xp_snapshot")
+    if snapshot is None:
+        students, students_live = merged_students()
+        rules, rules_live = fetch_table("xp_rules", rules_fallback)
+        events, events_live = fetch_table("xp_events", events_fallback)
+        claims, claims_live = fetch_table("xp_claims", claims_fallback)
+        snapshot = {
+            "students": students.copy(), "students_live": students_live,
+            "rules": rules.copy(), "rules_live": rules_live,
+            "events": events.copy(), "events_live": events_live,
+            "claims": claims.copy(), "claims_live": claims_live,
+        }
+        st.session_state.award_xp_snapshot = snapshot
+    students = snapshot["students"].copy()
+    students_live = bool(snapshot["students_live"])
+    rules = snapshot["rules"].copy()
+    rules_live = bool(snapshot["rules_live"])
+    events = snapshot["events"].copy()
+    events_live = bool(snapshot["events_live"])
+    claims_snapshot = snapshot["claims"].copy()
+    claims_live_snapshot = bool(snapshot["claims_live"])
     if "award_mode" in rules.columns:
         rules = rules[rules["award_mode"] == "manual"]
     if "code" in rules.columns:
@@ -7128,13 +7166,6 @@ def award_xp_page() -> None:
         ])]
     if "active" in rules.columns:
         rules = rules[rules["active"] == True]  # noqa: E712
-
-    events_fallback = pd.DataFrame([{
-        "id": 1, "NO MATRIK": "S24001", "rule_code": "consultation",
-        "points": 20, "reason": "Academic consultation",
-        "award_mode": "manual", "created_at": "2026-07-29T10:00:00+08:00",
-    }])
-    events, events_live = fetch_table("xp_events", events_fallback)
 
     view_tab, manual_tab, approval_tab, records_tab = st.tabs(
         [
@@ -7300,12 +7331,8 @@ def award_xp_page() -> None:
                             st.error(f"XP could not be recorded: {exc}")
 
     with approval_tab:
-        claims_fallback = pd.DataFrame([{
-            "id": 1, "NO MATRIK": "S24001", "claim_type": "study_group",
-            "title": "Algebra study group", "description": "Discussed equations.",
-            "proof_path": None, "status": "pending", "created_at": "2026-07-29",
-        }])
-        claims, claims_live = fetch_table("xp_claims", claims_fallback)
+        claims = claims_snapshot.copy()
+        claims_live = claims_live_snapshot
         if "status" in claims.columns:
             claims = claims[claims["status"] == "pending"]
         if claims.empty:
@@ -7350,10 +7377,13 @@ def award_xp_page() -> None:
                         "xp_event_id": event["id"],
                     }).eq("id", claim_row["id"]).execute()
                     if refresh_page:
-                        refresh_after_mutation(
-                            "xp_events", "xp_claims", "stud_xp",
-                            "student_badges", "student_activity_days",
+                        st.success(
+                            f"Request approved and {int(event.get('points', points))} "
+                            "XP recorded. Refresh when you want to reload the list."
                         )
+                    st.session_state.setdefault(
+                        "xp_review_processed", set()
+                    ).add(int(claim_row["id"]))
                     return True
                 except Exception as exc:
                     if refresh_page:
@@ -7368,6 +7398,10 @@ def award_xp_page() -> None:
                 )
             selected_claims: list[tuple[pd.Series, int]] = []
             for _, claim in claims.iterrows():
+                if int(claim["id"]) in st.session_state.get(
+                    "xp_review_processed", set()
+                ):
+                    continue
                 label = str(claim.get("claim_type", "study_group")).replace("_", " ").title()
                 select_column, request_column = st.columns(
                     [0.45, 9.8], vertical_alignment="center"
@@ -7438,7 +7472,13 @@ def award_xp_page() -> None:
                                 "reviewed_by": st.session_state.user["id"],
                                 "reviewed_at": datetime.now().isoformat(),
                             }).eq("id", claim["id"]).execute()
-                            refresh_after_mutation("xp_claims")
+                            st.session_state.setdefault(
+                                "xp_review_processed", set()
+                            ).add(int(claim["id"]))
+                            st.success(
+                                "Request rejected. Refresh when you want to "
+                                "reload the list."
+                            )
                 with select_column:
                     selected = st.checkbox(
                         "Select",
@@ -7473,16 +7513,12 @@ def award_xp_page() -> None:
                         approved += 1
                     else:
                         failed += 1
-                invalidate_table_cache(
-                    "xp_events", "xp_claims", "stud_xp",
-                    "student_badges", "student_activity_days",
-                )
-                st.session_state.xp_batch_notice = (
-                    "success" if failed == 0 else "warning",
+                message = (
                     f"{approved} request(s) approved"
-                    + (f"; {failed} failed." if failed else "."),
+                    + (f"; {failed} failed." if failed else ".")
+                    + " Refresh when you want to reload the list."
                 )
-                st.rerun()
+                (st.success if failed == 0 else st.warning)(message)
             if batch_reject.button(
                 "Reject selected",
                 disabled=selected_count == 0,
@@ -7499,12 +7535,13 @@ def award_xp_page() -> None:
                         "reviewed_by": st.session_state.user["id"],
                         "reviewed_at": datetime.now().isoformat(),
                     }).in_("id", selected_ids).execute()
-                    invalidate_table_cache("xp_claims")
-                    st.session_state.xp_batch_notice = (
-                        "success",
-                        f"{selected_count} request(s) rejected.",
+                    st.session_state.setdefault(
+                        "xp_review_processed", set()
+                    ).update(selected_ids)
+                    st.success(
+                        f"{selected_count} request(s) rejected. Refresh when "
+                        "you want to reload the list."
                     )
-                    st.rerun()
                 except Exception as exc:
                     st.error(f"Selected requests could not be rejected: {exc}")
     with records_tab:
@@ -7553,8 +7590,9 @@ def award_xp_page() -> None:
                                 "points": int(edited_points),
                                 "reason": edited_reason.strip(),
                             }).eq("id", event_id).execute()
-                            refresh_after_mutation(
-                                "xp_events", "stud_xp", "student_badges"
+                            st.success(
+                                "XP record updated. Refresh when you want to "
+                                "reload the page data."
                             )
                         except Exception as exc:
                             st.error(
@@ -7576,8 +7614,9 @@ def award_xp_page() -> None:
                 else:
                     try:
                         db().table("xp_events").delete().eq("id", event_id).execute()
-                        refresh_after_mutation(
-                            "xp_events", "stud_xp", "student_badges"
+                        st.success(
+                            "XP record deleted. Refresh when you want to "
+                            "reload the page data."
                         )
                     except Exception as exc:
                         st.error(
@@ -8897,6 +8936,21 @@ def main() -> None:
         st.session_state.header_mode_class = ""
     page = sidebar(role, display_name)
     page = mobile_navigation(role, page)
+    route_token = f"{role}:{page}"
+    previous_route = st.session_state.get("previous_route_token")
+    if (
+        role == "Admin"
+        and page == "Award XP"
+        and previous_route != route_token
+    ):
+        st.session_state.pop("award_xp_snapshot", None)
+        st.session_state.pop("xp_review_processed", None)
+        invalidate_table_cache(
+            "stud_background", "stud_progress", "stud_xp", "xp_rules",
+            "xp_events", "xp_claims", "student_badges",
+            "student_activity_days",
+        )
+    st.session_state.previous_route_token = route_token
     if role == "Student":
         if is_admin_student_preview():
             preview_user = current_user()
