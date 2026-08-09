@@ -1712,7 +1712,7 @@ def sidebar(role: str, name: str) -> str:
             "Student": [
                 "Profile", "Materials", "Results", "Leaderboard 1",
                 "Leaderboard 2", "Quiz", "Battle", "Battle Champions",
-                "Reward", "XP: Journey", "XP: SOP", "XP: Request",
+                "XP: Journey", "XP: SOP", "XP: Request", "Reward",
             ],
             "Admin": [
                 "User access",
@@ -1761,7 +1761,7 @@ def mobile_navigation(role: str, current_page: str) -> str:
         "Student": [
             "Profile", "Materials", "Results", "Leaderboard 1",
             "Leaderboard 2", "Quiz", "Battle", "Battle Champions",
-            "Reward", "XP: Journey", "XP: SOP", "XP: Request",
+            "XP: Journey", "XP: SOP", "XP: Request", "Reward",
         ],
         "Admin": [
             "User access", "CRUD", "Material", "Quiz", "Battle preview",
@@ -4233,11 +4233,12 @@ def reward_achievers_data() -> pd.DataFrame:
                 "Asia/Kuala_Lumpur"
             ).dt.date.min()
     cursor = first_battle_date - timedelta(days=first_battle_date.weekday())
+    reward_start = date(2026, 8, 9)
     reward_horizon = REWARD_SEMESTER_END
     while cursor <= reward_horizon:
         for offset, day_label in ((1, "Tuesday"), (6, "Sunday")):
             reward_date = cursor + timedelta(days=offset)
-            if reward_date > reward_horizon:
+            if reward_date < reward_start or reward_date > reward_horizon:
                 continue
             date_key = reward_date.strftime("%Y-%m-%d")
             achiever = (
