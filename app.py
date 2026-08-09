@@ -11,7 +11,7 @@ import os
 import random
 import re
 import secrets
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -1712,7 +1712,7 @@ def sidebar(role: str, name: str) -> str:
             "Student": [
                 "Profile", "Materials", "Results", "Leaderboard 1",
                 "Leaderboard 2", "Quiz", "Battle", "Battle Champions",
-                "XP: Journey", "XP: SOP", "XP: Request",
+                "Reward", "XP: Journey", "XP: SOP", "XP: Request",
             ],
             "Admin": [
                 "User access",
@@ -1730,6 +1730,7 @@ def sidebar(role: str, name: str) -> str:
                 "Analysis results",
                 "Analysis XP",
                 "Analysis battle",
+                "Reward",
             ],
         }
         labels = {item: item.upper() for items in menus.values() for item in items}
@@ -1760,14 +1761,14 @@ def mobile_navigation(role: str, current_page: str) -> str:
         "Student": [
             "Profile", "Materials", "Results", "Leaderboard 1",
             "Leaderboard 2", "Quiz", "Battle", "Battle Champions",
-            "XP: Journey", "XP: SOP", "XP: Request",
+            "Reward", "XP: Journey", "XP: SOP", "XP: Request",
         ],
         "Admin": [
             "User access", "CRUD", "Material", "Quiz", "Battle preview",
             "Award XP", "XP Mode", "SOP",
             "Student record", "Analysis background", "Analysis results",
             "Analysis student", "Analysis class", "Analysis XP",
-            "Analysis battle",
+            "Analysis battle", "Reward",
         ],
     }
     active_key = f"active_page_{role.lower()}"
@@ -4115,6 +4116,307 @@ def battle_champions_page() -> None:
                 f'<div class="champion-badge-grid">{badge_cards}</div>',
                 unsafe_allow_html=True,
             )
+
+
+REWARD_SEMESTER_END = date(2026, 10, 15)
+
+
+def reward_achievers_data() -> pd.DataFrame:
+    """Calculate finalized and pending XPLMS reward achievers."""
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date()
+    background, _ = fetch_table("stud_background", DEMO_STUDENTS)
+    events, _ = fetch_table("xp_events", pd.DataFrame())
+    badges, _ = fetch_table("student_badges", pd.DataFrame())
+    streaks, _ = streak_summary()
+    matches, _ = fetch_table("battle_matches", pd.DataFrame())
+    rows: list[dict[str, str]] = []
+
+    matric_col = "NO MATRIK"
+    if background.empty or matric_col not in background.columns:
+        members = pd.DataFrame(columns=[matric_col, "Student", "Class", "XPTEAM"])
+    else:
+        members = background.drop_duplicates(matric_col).copy()
+        name_col = next((column for column in (
+            "NICKNAME PELAJAR", "NAMA PELAJAR", "name"
+        ) if column in members.columns), None)
+        class_col = next((column for column in (
+            "KELAS", "CLASS", "class"
+        ) if column in members.columns), None)
+        team_col = next((column for column in (
+            "XPTEAM", "xpteam"
+        ) if column in members.columns), None)
+        members[matric_col] = members[matric_col].astype(str)
+        members["Student"] = (
+            members[name_col].fillna("UNKNOWN").astype(str).str.upper()
+            if name_col else "UNKNOWN"
+        )
+        members["Class"] = (
+            members[class_col].fillna("UNASSIGNED").astype(str).str.upper()
+            if class_col else "UNASSIGNED"
+        )
+        members["XPTEAM"] = (
+            members[team_col].fillna("UNASSIGNED").astype(str).str.upper()
+            if team_col else "UNASSIGNED"
+        )
+        members = members[[matric_col, "Student", "Class", "XPTEAM"]]
+    name_map = (
+        members.set_index(matric_col)["Student"].to_dict()
+        if not members.empty else {}
+    )
+    streak_map: dict[str, float] = {}
+    if not streaks.empty and {matric_col, "current_streak"}.issubset(streaks.columns):
+        streak_map = pd.to_numeric(
+            streaks.set_index(matric_col)["current_streak"], errors="coerce"
+        ).fillna(0).to_dict()
+    members["Streak"] = members[matric_col].map(streak_map).fillna(0)
+
+    event_work = events.copy()
+    if not event_work.empty and matric_col in event_work.columns:
+        event_work[matric_col] = event_work[matric_col].astype(str)
+        event_work["Points"] = pd.to_numeric(
+            event_work.get("points", 0), errors="coerce"
+        ).fillna(0)
+        event_work["When"] = pd.to_datetime(
+            event_work.get("created_at"), errors="coerce", utc=True
+        ).dt.tz_convert("Asia/Kuala_Lumpur")
+    else:
+        event_work = pd.DataFrame(columns=[matric_col, "Points", "When"])
+
+    def add(section: str, key: str, reward: str, achiever: str = "PENDING") -> None:
+        rows.append({
+            "Section": section,
+            "Reward key": key,
+            "Reward": reward,
+            "Achiever": achiever or "PENDING",
+        })
+
+    # Special rewards finalize immediately when the first qualifying badge exists.
+    for family, label in (("xp", "First XP Rookie Badge Achiever"),
+                          ("streak", "First Streak Rookie Badge Achiever")):
+        achiever = "PENDING"
+        if not badges.empty and {matric_col, "badge_name"}.issubset(badges.columns):
+            eligible = badges[
+                badges["badge_name"].astype(str).str.lower().eq("rookie")
+            ].copy()
+            if "badge_family" in eligible.columns:
+                eligible = eligible[
+                    eligible["badge_family"].astype(str).str.lower().eq(family)
+                ]
+            if not eligible.empty:
+                eligible["_earned"] = pd.to_datetime(
+                    eligible.get("earned_at"), errors="coerce", utc=True
+                )
+                winner = eligible.sort_values(
+                    ["_earned", matric_col], na_position="last"
+                ).iloc[0]
+                achiever = name_map.get(str(winner[matric_col]), str(winner[matric_col]))
+        add("SPECIAL", f"special:{family}:rookie:first", label, achiever)
+
+    # Every Tuesday and Sunday since the first Battle week is represented.
+    daily = daily_battle_champions_data()
+    daily_map = {
+        str(row["Date"]): str(row["Champion"])
+        for _, row in daily.iterrows()
+    } if not daily.empty else {}
+    first_battle_date = today
+    if not matches.empty:
+        battle_times = pd.to_datetime(
+            matches.get("completed_at"), errors="coerce", utc=True
+        ).dropna()
+        if not battle_times.empty:
+            first_battle_date = battle_times.dt.tz_convert(
+                "Asia/Kuala_Lumpur"
+            ).dt.date.min()
+    cursor = first_battle_date - timedelta(days=first_battle_date.weekday())
+    current_week_end = today + timedelta(days=6 - today.weekday())
+    while cursor <= current_week_end:
+        for offset, day_label in ((1, "Tuesday"), (6, "Sunday")):
+            reward_date = cursor + timedelta(days=offset)
+            if reward_date > current_week_end:
+                continue
+            date_key = reward_date.strftime("%Y-%m-%d")
+            achiever = (
+                daily_map.get(date_key, "PENDING")
+                if reward_date < today else "PENDING"
+            )
+            add(
+                "WEEKLY", f"weekly:battle:{date_key}",
+                f"{day_label} Battle Champion · {date_key}", achiever,
+            )
+        cursor += timedelta(days=7)
+
+    def period_winners(period_events: pd.DataFrame) -> tuple[str, str]:
+        if members.empty:
+            return "PENDING", "PENDING"
+        totals = (
+            period_events.groupby(matric_col)["Points"].sum()
+            if not period_events.empty else pd.Series(dtype=float)
+        )
+        scored = members.copy()
+        scored["XP"] = scored[matric_col].map(totals).fillna(0)
+        individual = scored.sort_values(
+            ["XP", "Student"], ascending=[False, True]
+        ).iloc[0]
+        individual_name = (
+            str(individual["Student"]) if float(individual["XP"]) != 0
+            else "PENDING"
+        )
+        teams = scored.groupby("XPTEAM", dropna=False).agg(
+            **{"Streak Average": ("Streak", "mean"),
+               "XP Average": ("XP", "mean")}
+        ).reset_index().sort_values(
+            ["Streak Average", "XP Average", "XPTEAM"],
+            ascending=[False, False, True],
+        )
+        team_name = str(teams.iloc[0]["XPTEAM"]) if not teams.empty else "PENDING"
+        return individual_name, team_name
+
+    # Finalized previous months plus the current pending month.
+    month_starts = [date(today.year, today.month, 1)]
+    valid_event_dates = event_work["When"].dropna() if "When" in event_work else pd.Series(dtype="datetime64[ns]")
+    if not valid_event_dates.empty:
+        first_month = valid_event_dates.min().date().replace(day=1)
+        month_starts = []
+        month_cursor = first_month
+        while month_cursor <= date(today.year, today.month, 1):
+            month_starts.append(month_cursor)
+            month_cursor = (
+                date(month_cursor.year + 1, 1, 1)
+                if month_cursor.month == 12
+                else date(month_cursor.year, month_cursor.month + 1, 1)
+            )
+    for month_start in month_starts:
+        next_month = (
+            date(month_start.year + 1, 1, 1)
+            if month_start.month == 12
+            else date(month_start.year, month_start.month + 1, 1)
+        )
+        month_key = month_start.strftime("%Y-%m")
+        finalized = today >= next_month
+        if finalized:
+            period_events = event_work[
+                (event_work["When"].dt.date >= month_start)
+                & (event_work["When"].dt.date < next_month)
+            ]
+            individual_name, team_name = period_winners(period_events)
+        else:
+            individual_name, team_name = "PENDING", "PENDING"
+        add("MONTHLY", f"monthly:{month_key}:individual",
+            f"Top Achiever (Individual) · {month_key}", individual_name)
+        add("MONTHLY", f"monthly:{month_key}:team",
+            f"Top Achiever (Team) · {month_key}", team_name)
+
+    semester_finalized = today > REWARD_SEMESTER_END
+    semester_events = event_work[
+        event_work["When"].dt.date <= REWARD_SEMESTER_END
+    ] if semester_finalized and not event_work.empty else pd.DataFrame()
+    sem_individual, sem_team = (
+        period_winners(semester_events)
+        if semester_finalized else ("PENDING", "PENDING")
+    )
+    add("END OF SEM", "semester:2026:individual", "Top Achiever (Individual)", sem_individual)
+    add("END OF SEM", "semester:2026:team", "Top Achiever (Team)", sem_team)
+
+    class_name = "PENDING"
+    champion_name = "PENDING"
+    if semester_finalized and not members.empty:
+        totals = semester_events.groupby(matric_col)["Points"].sum() if not semester_events.empty else pd.Series(dtype=float)
+        sem_members = members.copy()
+        sem_members["XP"] = sem_members[matric_col].map(totals).fillna(0)
+        classes = sem_members.groupby("Class", dropna=False).agg(
+            **{"Streak Average": ("Streak", "mean"),
+               "XP Average": ("XP", "mean")}
+        ).reset_index().sort_values(
+            ["Streak Average", "XP Average", "Class"],
+            ascending=[False, False, True],
+        )
+        if not classes.empty:
+            class_name = str(classes.iloc[0]["Class"])
+        battle_cutoff = matches.copy()
+        if not battle_cutoff.empty:
+            completed_time = pd.to_datetime(
+                battle_cutoff.get("completed_at"), errors="coerce", utc=True
+            ).dt.tz_convert("Asia/Kuala_Lumpur")
+            battle_cutoff = battle_cutoff[completed_time.dt.date <= REWARD_SEMESTER_END]
+            standings = battle_leaderboard_data(battle_cutoff)
+            if not standings.empty:
+                standings = standings.sort_values(
+                    ["Wins", "Draws", "Player"],
+                    ascending=[False, False, True],
+                )
+                champion_name = str(standings.iloc[0]["Player"])
+    add("END OF SEM", "semester:2026:class", "Top Achiever (Class)", class_name)
+    add("END OF SEM", "semester:2026:champion", "Top Achiever (Champion)", champion_name)
+    return pd.DataFrame(rows)
+
+
+def reward_page() -> None:
+    heading("", "Reward")
+    rewards = reward_achievers_data()
+    redemptions, redemption_live = fetch_table(
+        "reward_redemptions", pd.DataFrame()
+    )
+    redeemed_keys = (
+        set(redemptions["reward_key"].astype(str))
+        if not redemptions.empty and "reward_key" in redemptions.columns else set()
+    )
+    tabs = st.tabs(["SPECIAL", "WEEKLY", "MONTHLY", "END OF SEM"])
+    role = str(current_user().get("role") or "Student").title()
+    for tab, section in zip(tabs, ("SPECIAL", "WEEKLY", "MONTHLY", "END OF SEM")):
+        with tab:
+            section_rows = rewards[rewards["Section"] == section]
+            if section_rows.empty:
+                st.info("No reward is configured for this section.")
+                continue
+            if section == "END OF SEM":
+                st.caption("END OF SEMESTER · 15 OCTOBER 2026")
+            if role != "Admin":
+                display = section_rows[["Reward", "Achiever", "Reward key"]].copy()
+                display["Redeem"] = display["Reward key"].map(
+                    lambda key: "REDEEMED" if str(key) in redeemed_keys else ""
+                )
+                st.dataframe(
+                    display.drop(columns=["Reward key"]),
+                    hide_index=True,
+                    width="stretch",
+                )
+                continue
+            header_reward, header_achiever, header_redeem = st.columns([3, 2, 1])
+            header_reward.markdown("**REWARD**")
+            header_achiever.markdown("**ACHIEVER**")
+            header_redeem.markdown("**REDEEM**")
+            for _, reward in section_rows.iterrows():
+                reward_key = str(reward["Reward key"])
+                is_redeemed = reward_key in redeemed_keys
+                is_pending = str(reward["Achiever"]).upper() == "PENDING"
+                with st.container(border=True):
+                    reward_col, achiever_col, redeem_col = st.columns([3, 2, 1])
+                    reward_col.write(str(reward["Reward"]))
+                    achiever_col.write(str(reward["Achiever"]))
+                    if is_redeemed:
+                        redeem_col.success("REDEEMED")
+                    elif redeem_col.button(
+                        "REDEEMED",
+                        key=f"redeem_reward_{hashlib.sha1(reward_key.encode()).hexdigest()[:12]}",
+                        disabled=is_pending or not redemption_live,
+                        use_container_width=True,
+                    ):
+                        try:
+                            db().table("reward_redemptions").insert({
+                                "reward_key": reward_key,
+                                "reward_section": section,
+                                "reward_name": str(reward["Reward"]),
+                                "achiever": str(reward["Achiever"]),
+                                "redeemed_by": current_user().get("id"),
+                            }).execute()
+                            invalidate_table_cache("reward_redemptions")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Reward could not be marked redeemed: {exc}")
+            if not redemption_live:
+                st.warning(
+                    "Run migration 033 to enable persistent reward redemption."
+                )
 
 
 def student_leaderboard_one_page() -> None:
@@ -10180,6 +10482,7 @@ def main() -> None:
             "Quiz": quiz_page,
             "Battle": battle_page,
             "Battle Champions": battle_champions_page,
+            "Reward": reward_page,
             "XP: Journey": my_xp_page,
             "XP: SOP": lambda: sop_page("XP: SOP"),
             "Leaderboard 1": student_leaderboard_one_page,
@@ -10196,6 +10499,7 @@ def main() -> None:
             "Analysis results": analysis_progress_page,
             "Analysis XP": analysis_xp_page,
             "Analysis battle": analysis_battle_page,
+            "Reward": reward_page,
             "CRUD": admin_crud_page,
             "Award XP": award_xp_page,
             "XP Mode": admin_xp_mode_page,
