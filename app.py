@@ -4191,12 +4191,17 @@ def reward_achievers_data() -> pd.DataFrame:
         })
 
     # Special rewards finalize immediately when the first qualifying badge exists.
-    for family, label in (("xp", "First XP Rookie Badge Achiever"),
-                          ("streak", "First Streak Rookie Badge Achiever")):
+    special_badges = (
+        ("xp", "rookie", "First XP Rookie Badge"),
+        ("streak", "rookie", "First Streak Rookie Badge"),
+        ("xp", "legend", "First XP Legend Badge"),
+        ("streak", "legend", "First Streak Legend Badge"),
+    )
+    for family, badge_level, label in special_badges:
         achiever = "PENDING"
         if not badges.empty and {matric_col, "badge_name"}.issubset(badges.columns):
             eligible = badges[
-                badges["badge_name"].astype(str).str.lower().eq("rookie")
+                badges["badge_name"].astype(str).str.lower().eq(badge_level)
             ].copy()
             if "badge_family" in eligible.columns:
                 eligible = eligible[
@@ -4210,7 +4215,7 @@ def reward_achievers_data() -> pd.DataFrame:
                     ["_earned", matric_col], na_position="last"
                 ).iloc[0]
                 achiever = name_map.get(str(winner[matric_col]), str(winner[matric_col]))
-        add("SPECIAL", f"special:{family}:rookie:first", label, achiever)
+        add("SPECIAL", f"special:{family}:{badge_level}:first", label, achiever)
 
     # Every Tuesday and Sunday since the first Battle week is represented.
     daily = daily_battle_champions_data()
@@ -4228,11 +4233,11 @@ def reward_achievers_data() -> pd.DataFrame:
                 "Asia/Kuala_Lumpur"
             ).dt.date.min()
     cursor = first_battle_date - timedelta(days=first_battle_date.weekday())
-    current_week_end = today + timedelta(days=6 - today.weekday())
-    while cursor <= current_week_end:
+    reward_horizon = REWARD_SEMESTER_END
+    while cursor <= reward_horizon:
         for offset, day_label in ((1, "Tuesday"), (6, "Sunday")):
             reward_date = cursor + timedelta(days=offset)
-            if reward_date > current_week_end:
+            if reward_date > reward_horizon:
                 continue
             date_key = reward_date.strftime("%Y-%m-%d")
             achiever = (
@@ -4271,32 +4276,38 @@ def reward_achievers_data() -> pd.DataFrame:
         team_name = str(teams.iloc[0]["XPTEAM"]) if not teams.empty else "PENDING"
         return individual_name, team_name
 
-    # Finalized previous months plus the current pending month.
-    month_starts = [date(today.year, today.month, 1)]
+    # Every month through the semester cutoff, including future pending months.
+    first_month = date(today.year, today.month, 1)
     valid_event_dates = event_work["When"].dropna() if "When" in event_work else pd.Series(dtype="datetime64[ns]")
     if not valid_event_dates.empty:
         first_month = valid_event_dates.min().date().replace(day=1)
-        month_starts = []
-        month_cursor = first_month
-        while month_cursor <= date(today.year, today.month, 1):
-            month_starts.append(month_cursor)
-            month_cursor = (
-                date(month_cursor.year + 1, 1, 1)
-                if month_cursor.month == 12
-                else date(month_cursor.year, month_cursor.month + 1, 1)
-            )
+    month_starts = []
+    month_cursor = first_month
+    reward_horizon_month = date(
+        REWARD_SEMESTER_END.year, REWARD_SEMESTER_END.month, 1
+    )
+    while month_cursor <= reward_horizon_month:
+        month_starts.append(month_cursor)
+        month_cursor = (
+            date(month_cursor.year + 1, 1, 1)
+            if month_cursor.month == 12
+            else date(month_cursor.year, month_cursor.month + 1, 1)
+        )
     for month_start in month_starts:
         next_month = (
             date(month_start.year + 1, 1, 1)
             if month_start.month == 12
             else date(month_start.year, month_start.month + 1, 1)
         )
+        period_end = min(
+            next_month, REWARD_SEMESTER_END + timedelta(days=1)
+        )
         month_key = month_start.strftime("%Y-%m")
-        finalized = today >= next_month
+        finalized = today >= period_end
         if finalized:
             period_events = event_work[
                 (event_work["When"].dt.date >= month_start)
-                & (event_work["When"].dt.date < next_month)
+                & (event_work["When"].dt.date < period_end)
             ]
             individual_name, team_name = period_winners(period_events)
         else:
@@ -4372,7 +4383,7 @@ def reward_page() -> None:
                 st.caption("END OF SEMESTER · 15 OCTOBER 2026")
             if role != "Admin":
                 display = section_rows[["Reward", "Achiever", "Reward key"]].copy()
-                display["Redeem"] = display["Reward key"].map(
+                display["Redemption"] = display["Reward key"].map(
                     lambda key: "REDEEMED" if str(key) in redeemed_keys else ""
                 )
                 st.dataframe(
@@ -4384,7 +4395,7 @@ def reward_page() -> None:
             header_reward, header_achiever, header_redeem = st.columns([3, 2, 1])
             header_reward.markdown("**REWARD**")
             header_achiever.markdown("**ACHIEVER**")
-            header_redeem.markdown("**REDEEM**")
+            header_redeem.markdown("**REDEMPTION**")
             for _, reward in section_rows.iterrows():
                 reward_key = str(reward["Reward key"])
                 is_redeemed = reward_key in redeemed_keys
