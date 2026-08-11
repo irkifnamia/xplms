@@ -2155,12 +2155,12 @@ def add_group_rank(
     xp_column: str,
     rank_column: str,
 ) -> pd.DataFrame:
-    """Rank groups by streak average first, then XP average."""
+    """Rank groups by XP average first, then streak average."""
     if frame.empty:
         frame[rank_column] = pd.Series(dtype="int64")
         return frame
     ordered = frame.sort_values(
-        ["Streak Average", xp_column],
+        [xp_column, "Streak Average"],
         ascending=[False, False],
         kind="stable",
     )
@@ -2169,8 +2169,8 @@ def add_group_rank(
     current_rank = 0
     for position, (index, row) in enumerate(ordered.iterrows(), start=1):
         key = (
-            round(float(row["Streak Average"]), 10),
             round(float(row[xp_column]), 10),
+            round(float(row["Streak Average"]), 10),
         )
         if key != previous:
             current_rank = position
@@ -2178,6 +2178,62 @@ def add_group_rank(
         ranks[index] = current_rank
     frame[rank_column] = frame.index.map(ranks).astype(int)
     return frame
+
+
+def add_individual_xp_rank(
+    frame: pd.DataFrame,
+    xp_column: str,
+    rank_column: str,
+) -> pd.DataFrame:
+    """Rank students by XP first and current streak second."""
+    if frame.empty:
+        frame[rank_column] = pd.Series(dtype="int64")
+        return frame
+    ordered = frame.sort_values(
+        [xp_column, "Current Streak"],
+        ascending=[False, False],
+        kind="stable",
+    )
+    ranks: dict[Any, int] = {}
+    previous: tuple[float, float] | None = None
+    current_rank = 0
+    for position, (index, row) in enumerate(ordered.iterrows(), start=1):
+        key = (
+            round(float(row[xp_column]), 10),
+            round(float(row["Current Streak"]), 10),
+        )
+        if key != previous:
+            current_rank = position
+            previous = key
+        ranks[index] = current_rank
+    frame[rank_column] = frame.index.map(ranks).astype(int)
+    return frame
+
+
+def render_leaderboard_rank_rules() -> None:
+    """Show the shared XP leaderboard ranking hierarchy."""
+    st.subheader("LEADERBOARD RANK RULES")
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "Leaderboard": "Individual",
+                "1st criterion": "XP",
+                "2nd criterion": "Current streak",
+            },
+            {
+                "Leaderboard": "Class",
+                "1st criterion": "XP average",
+                "2nd criterion": "Streak average",
+            },
+            {
+                "Leaderboard": "XP Team",
+                "1st criterion": "XP average",
+                "2nd criterion": "Streak average",
+            },
+        ]),
+        hide_index=True,
+        width="stretch",
+    )
 
 
 def leaderboard_data(
@@ -2275,12 +2331,6 @@ def leaderboard_data(
         individuals["NO MATRIK"].map(monthly_xp).fillna(0)
     )
 
-    individuals["Monthly Rank"] = (
-        individuals["Monthly XP"].rank(method="min", ascending=False).astype(int)
-    )
-    individuals["Overall Rank"] = (
-        individuals["Overall XP"].rank(method="min", ascending=False).astype(int)
-    )
     if (
         badges_live
         and not earned_badges.empty
@@ -2306,6 +2356,12 @@ def leaderboard_data(
         ).fillna(0).astype(int)
     else:
         individuals["Current Streak"] = 0
+    individuals = add_individual_xp_rank(
+        individuals, "Monthly XP", "Monthly Rank"
+    )
+    individuals = add_individual_xp_rank(
+        individuals, "Overall XP", "Overall Rank"
+    )
     if (
         badges_live
         and not earned_badges.empty
@@ -4471,8 +4527,9 @@ def reward_page() -> None:
 def student_leaderboard_one_page() -> None:
     heading("", "Leaderboard 1")
     ctx = student_leaderboard_context()
-    test_tab, xp_tab, streak_tab, badge_tab, battle_tab, team_tab = st.tabs([
+    test_tab, xp_tab, streak_tab, badge_tab, battle_tab, team_tab, rules_tab = st.tabs([
         "TEST", "XP", "STREAK", "BADGE", "BATTLE", "XP (TEAM)",
+        "RANK RULES",
     ])
     with test_tab:
         selected_class = st.selectbox(
@@ -4523,7 +4580,7 @@ def student_leaderboard_one_page() -> None:
         else:
             display = rows[[
                 "NO MATRIK", "Monthly Rank", "Overall Rank", "Student", "Class",
-                "Monthly XP", "Overall XP", "Badge",
+                "Monthly XP", "Overall XP", "Current Streak", "Badge",
             ]].sort_values(["Monthly Rank", "Overall Rank", "Student"])
             mask = display["NO MATRIK"].astype(str) == ctx["current_matric"]
             st.dataframe(
@@ -4677,12 +4734,15 @@ def student_leaderboard_one_page() -> None:
                 width="stretch",
             )
 
+    with rules_tab:
+        render_leaderboard_rank_rules()
+
 
 def student_leaderboard_two_page() -> None:
     heading("", "Leaderboard 2")
     ctx = student_leaderboard_context()
-    test_tab, xp_tab, badge_tab = st.tabs([
-        "TEST (CLASS)", "XP (CLASS)", "BADGE (CLASS)",
+    test_tab, xp_tab, badge_tab, rules_tab = st.tabs([
+        "TEST (CLASS)", "XP (CLASS)", "BADGE (CLASS)", "RANK RULES",
     ])
     with test_tab:
         assessment = st.selectbox(
@@ -4753,6 +4813,9 @@ def student_leaderboard_two_page() -> None:
                 highlight_current_class_column(display, ctx["current_class"]),
                 hide_index=True, width="stretch",
             )
+
+    with rules_tab:
+        render_leaderboard_rank_rules()
 
 
 def render_admin_material_view(
@@ -10043,10 +10106,10 @@ def analysis_xp_page() -> None:
             "Students currently active",
         )
 
-    individual_tab, class_tab, team_tab, badge_tab = st.tabs(
+    individual_tab, class_tab, team_tab, badge_tab, rules_tab = st.tabs(
         [
             "INDIVIDUAL LEADERBOARD", "CLASS LEADERBOARD",
-            "XPTEAM LEADERBOARD", "BADGE LEADERBOARD",
+            "XPTEAM LEADERBOARD", "BADGE LEADERBOARD", "RANK RULES",
         ]
     )
     with individual_tab:
@@ -10116,6 +10179,9 @@ def analysis_xp_page() -> None:
                 hide_index=True,
                 width="stretch",
             )
+
+    with rules_tab:
+        render_leaderboard_rank_rules()
 
 
 def admin_crud_page() -> None:
