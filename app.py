@@ -8325,11 +8325,66 @@ def award_xp_page() -> None:
         str(row["code"]): row for _, row in rules.iterrows()
     } if not rules.empty else {}
 
+    def student_class(matric: Any) -> str:
+        matric_text = str(matric)
+        matched = (
+            choices[choices[matric_col].astype(str) == matric_text]
+            if matric_col and not choices.empty else pd.DataFrame()
+        )
+        if matched.empty or not class_col:
+            return "UNASSIGNED"
+        value = matched.iloc[0].get(class_col)
+        return str(value).strip() if pd.notna(value) else "UNASSIGNED"
+
+    def award_category(value: Any) -> str:
+        return str(value or "unknown").replace("_", " ").strip().title()
+
+    all_classes = sorted({student_class(value) for value in labels})
+
+    def filter_award_rows(
+        frame: pd.DataFrame, category_column: str, key_prefix: str,
+    ) -> pd.DataFrame:
+        """Apply the shared category/class filters to an XP Admin table."""
+        if frame.empty:
+            return frame
+        filtered = frame.copy()
+        categories = sorted({
+            award_category(value)
+            for value in filtered.get(
+                category_column, pd.Series(index=filtered.index, dtype=str)
+            ).dropna()
+        })
+        filter_category_col, filter_class_col = st.columns(2)
+        selected_category = filter_category_col.selectbox(
+            "Award category", ["ALL", *categories], key=f"{key_prefix}_category",
+        )
+        selected_class = filter_class_col.selectbox(
+            "Class", ["ALL", *all_classes], key=f"{key_prefix}_class",
+        )
+        category_values = filtered.get(
+            category_column, pd.Series(index=filtered.index, dtype=str)
+        ).map(award_category)
+        class_values = filtered.get(
+            "NO MATRIK", pd.Series(index=filtered.index, dtype=str)
+        ).map(student_class)
+        if selected_category != "ALL":
+            filtered = filtered[category_values.eq(selected_category)]
+            class_values = class_values.loc[filtered.index]
+        if selected_class != "ALL":
+            filtered = filtered[class_values.eq(selected_class)]
+        return filtered
+
     with view_tab:
         if managed_events.empty:
             st.info("No Admin-managed XP awards are available.")
         else:
-            shown_events = managed_events.copy()
+            shown_events = filter_award_rows(
+                managed_events, "rule_code", "award_xp_view"
+            )
+            if shown_events.empty:
+                st.info("No XP awards match the selected filters.")
+                shown_events = pd.DataFrame()
+        if not managed_events.empty and not shown_events.empty:
             shown_events["Student"] = shown_events["NO MATRIK"].map(
                 identity_label
             )
@@ -8443,8 +8498,24 @@ def award_xp_page() -> None:
         claims_live = claims_live_snapshot
         if "status" in claims.columns:
             claims = claims[claims["status"] == "pending"]
+        if not claims.empty:
+            claims = filter_award_rows(
+                claims, "claim_type", "award_xp_approve"
+            )
+        if len(claims) > 15:
+            total_request_pages = (len(claims) + 14) // 15
+            request_page = st.number_input(
+                "Request page", min_value=1, max_value=total_request_pages,
+                value=1, step=1, key="award_xp_request_page",
+            )
+            request_start = (int(request_page) - 1) * 15
+            st.caption(
+                f"Showing requests {request_start + 1}–"
+                f"{min(request_start + 15, len(claims))} of {len(claims)}."
+            )
+            claims = claims.iloc[request_start:request_start + 15].copy()
         if claims.empty:
-            st.info("No pending XP requests.")
+            st.info("No pending XP requests match the selected filters.")
         else:
             client = db()
 
@@ -8453,6 +8524,7 @@ def award_xp_page() -> None:
                 points: int,
                 admin_note: str = "",
                 refresh_page: bool = True,
+                use_fast_rpc: bool = True,
             ) -> bool:
                 """Approve one request using its displayed or quick XP value."""
                 if not claims_live:
@@ -8463,6 +8535,33 @@ def award_xp_page() -> None:
                     if refresh_page:
                         st.error("XP award cannot be zero.")
                     return False
+                if use_fast_rpc:
+                    try:
+                        result = client.rpc("approve_xp_claims_bulk", {
+                            "p_items": [{
+                                "claim_id": int(claim_row["id"]),
+                                "points": int(points),
+                                "admin_note": admin_note,
+                            }],
+                            "p_admin_id": st.session_state.user["id"],
+                        }).execute()
+                        result_row = (result.data or [{}])[0]
+                        if int(result_row.get("approved_count", 0)) == 1:
+                            st.session_state.setdefault(
+                                "xp_review_processed", set()
+                            ).add(int(claim_row["id"]))
+                            if refresh_page:
+                                st.success(
+                                    f"Request approved and {int(points)} XP recorded. "
+                                    "Refresh when you want to reload the list."
+                                )
+                            return True
+                        if refresh_page:
+                            st.error("Request approval failed validation.")
+                        return False
+                    except Exception:
+                        # Fall through while migration 034 is being deployed.
+                        pass
                 try:
                     claim_rule = str(
                         claim_row.get("claim_type", "study_group")
@@ -8624,16 +8723,45 @@ def award_xp_page() -> None:
             ) and selected_count > 0:
                 approved = 0
                 failed = 0
-                for selected_claim, selected_points in selected_claims:
-                    if approve_pending_claim(
-                        selected_claim,
-                        selected_points,
-                        "Batch approved by Admin",
-                        refresh_page=False,
-                    ):
-                        approved += 1
-                    else:
-                        failed += 1
+                used_bulk_rpc = False
+                if claims_live and selected_count > 1:
+                    try:
+                        payload = [
+                            {
+                                "claim_id": int(selected_claim["id"]),
+                                "points": int(selected_points),
+                                "admin_note": "Batch approved by Admin",
+                            }
+                            for selected_claim, selected_points in selected_claims
+                        ]
+                        result = client.rpc("approve_xp_claims_bulk", {
+                            "p_items": payload,
+                            "p_admin_id": st.session_state.user["id"],
+                        }).execute()
+                        result_row = (result.data or [{}])[0]
+                        approved = int(result_row.get("approved_count", selected_count))
+                        failed = int(result_row.get("failed_count", 0))
+                        if failed == 0:
+                            st.session_state.setdefault(
+                                "xp_review_processed", set()
+                            ).update(int(row["id"]) for row, _ in selected_claims)
+                        used_bulk_rpc = True
+                    except Exception:
+                        # Migration 034 is optional during rollout; retain the
+                        # proven per-request path until the RPC is available.
+                        used_bulk_rpc = False
+                if not used_bulk_rpc:
+                    for selected_claim, selected_points in selected_claims:
+                        if approve_pending_claim(
+                            selected_claim,
+                            selected_points,
+                            "Batch approved by Admin",
+                            refresh_page=False,
+                            use_fast_rpc=False,
+                        ):
+                            approved += 1
+                        else:
+                            failed += 1
                 message = (
                     f"{approved} request(s) approved"
                     + (f"; {failed} failed." if failed else ".")
@@ -8669,6 +8797,12 @@ def award_xp_page() -> None:
         if managed_events.empty or "id" not in managed_events.columns:
             st.info("No Admin-managed XP awards are available.")
         else:
+            editable_events = filter_award_rows(
+                managed_events, "rule_code", "award_xp_edit"
+            )
+            if editable_events.empty:
+                st.info("No XP awards match the selected filters.")
+                return
             def event_points(value: Any) -> int:
                 numeric = pd.to_numeric(value, errors="coerce")
                 return int(numeric) if pd.notna(numeric) else 0
@@ -8680,7 +8814,7 @@ def award_xp_page() -> None:
                     f"{str(row.get('rule_code', '')).replace('_', ' ').title()} · "
                     f"{event_points(row.get('points')):+d} XP"
                 )
-                for _, row in managed_events.sort_values(
+                for _, row in editable_events.sort_values(
                     "created_at", ascending=False, na_position="last"
                 ).iterrows()
             }
@@ -8689,7 +8823,7 @@ def award_xp_page() -> None:
                 format_func=lambda value: event_labels[value],
                 key="manage_xp_event_id",
             )
-            event = managed_events[managed_events["id"] == event_id].iloc[0]
+            event = editable_events[editable_events["id"] == event_id].iloc[0]
             with st.form("edit_xp_event"):
                 edited_points = st.number_input(
                     "XP points", min_value=-1000, max_value=1000,
@@ -9378,6 +9512,58 @@ def analysis_class_page() -> None:
         st.caption("Some sample data is shown because live tables are unavailable.")
 
 
+def battle_analysis_period_filter(
+    completed: pd.DataFrame, key_prefix: str,
+) -> pd.DataFrame:
+    """Filter completed battles by Malaysia-local month, week and date."""
+    if completed.empty:
+        return completed
+    filtered = completed.copy()
+    timestamp_column = (
+        "completed_at" if "completed_at" in filtered.columns else "started_at"
+    )
+    local_time = pd.to_datetime(
+        filtered.get(timestamp_column), errors="coerce", utc=True
+    ).dt.tz_convert("Asia/Kuala_Lumpur")
+    valid_time = local_time.dropna()
+    if valid_time.empty:
+        return filtered.iloc[0:0]
+    months = sorted(valid_time.dt.strftime("%Y-%m").unique(), reverse=True)
+    date_col, week_col, month_col = st.columns(3)
+    selected_month = month_col.selectbox(
+        "Month", ["ALL", *months], key=f"{key_prefix}_month",
+    )
+    month_mask = pd.Series(True, index=filtered.index)
+    if selected_month != "ALL":
+        month_mask = local_time.dt.strftime("%Y-%m").eq(selected_month)
+    row_week = local_time.dt.normalize() - pd.to_timedelta(
+        local_time.dt.weekday, unit="D"
+    )
+    weeks = sorted(
+        row_week[month_mask & local_time.notna()].dropna()
+        .dt.strftime("%Y-%m-%d").unique(),
+        reverse=True,
+    )
+    selected_week = week_col.selectbox(
+        "Week starting", ["ALL", *weeks], key=f"{key_prefix}_week",
+    )
+    week_mask = pd.Series(True, index=filtered.index)
+    if selected_week != "ALL":
+        week_mask = row_week.dt.strftime("%Y-%m-%d").eq(selected_week)
+    dates = sorted(
+        local_time[month_mask & week_mask & local_time.notna()].dt.date.unique(),
+        reverse=True,
+    )
+    selected_date = date_col.selectbox(
+        "Date", ["ALL", *[value.isoformat() for value in dates]],
+        key=f"{key_prefix}_date",
+    )
+    date_mask = pd.Series(True, index=filtered.index)
+    if selected_date != "ALL":
+        date_mask = local_time.dt.date.astype(str).eq(selected_date)
+    return filtered[month_mask & week_mask & date_mask].copy()
+
+
 def analysis_battle_page() -> None:
     """Summarise Battle adoption, outcomes, speed, accuracy and XP."""
     heading("", "Analysis Battle")
@@ -9465,10 +9651,19 @@ def analysis_battle_page() -> None:
                 hide_index=True, width="stretch",
             )
     with performance_tab:
-        if answers.empty:
+        performance_matches = battle_analysis_period_filter(
+            completed, "battle_question_performance"
+        )
+        performance_answers = answers.copy()
+        if not performance_answers.empty and "battle_id" in performance_answers.columns:
+            allowed_ids = set(performance_matches.get("id", pd.Series(dtype=object)))
+            performance_answers = performance_answers[
+                performance_answers["battle_id"].isin(allowed_ids)
+            ]
+        if performance_answers.empty:
             st.info("No Battle answers are recorded yet.")
         else:
-            work = answers.copy()
+            work = performance_answers.copy()
             work["is_correct"] = work.get("is_correct", False).fillna(False).astype(bool)
             work["time_taken_ms"] = pd.to_numeric(
                 work.get("time_taken_ms", 0), errors="coerce"
@@ -9495,11 +9690,14 @@ def analysis_battle_page() -> None:
             ).round(2)
             st.dataframe(summary, hide_index=True, width="stretch")
     with players_tab:
-        if completed.empty:
+        leaderboard_matches = battle_analysis_period_filter(
+            completed, "battle_leaderboard"
+        )
+        if leaderboard_matches.empty:
             st.info("No completed Battle leaderboard is available.")
         else:
             rows: list[dict[str, Any]] = []
-            for _, match in completed.iterrows():
+            for _, match in leaderboard_matches.iterrows():
                 winner = str(match.get("winner_id") or "")
                 for side in ("a", "b"):
                     player_id = str(match.get(f"player_{side}_id"))
