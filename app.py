@@ -8290,8 +8290,12 @@ def award_xp_page() -> None:
         (c for c in ["KELAS", "CLASS", "class", "cohort"] if c in students.columns),
         None,
     )
+    team_col = next(
+        (c for c in ["XPTEAM", "xpteam", "XP TEAM"] if c in students.columns),
+        None,
+    )
     identity_columns = [
-        column for column in [matric_col, name_col, class_col] if column
+        column for column in [matric_col, name_col, class_col, team_col] if column
     ]
     choices = (
         students[identity_columns].drop_duplicates(subset=[matric_col])
@@ -8441,8 +8445,41 @@ def award_xp_page() -> None:
                 ),
                 key="manual_xp_rule_code",
             )
+            recipient_type = st.radio(
+                "Award recipient",
+                ["Student", "Class", "XP Team"],
+                horizontal=True,
+                key="manual_xp_recipient_type",
+            )
+            class_options = sorted({
+                str(value).strip()
+                for value in choices.get(class_col, pd.Series(dtype=str)).dropna()
+                if str(value).strip()
+                and str(value).strip().lower() not in {"nan", "unassigned"}
+            }) if class_col else []
+            team_options = sorted({
+                str(value).strip()
+                for value in choices.get(team_col, pd.Series(dtype=str)).dropna()
+                if str(value).strip()
+                and str(value).strip().lower() not in {"nan", "unassigned"}
+            }) if team_col else []
             with st.form("manual_xp_award_tabs", clear_on_submit=True):
-                matric = st.selectbox("Student", list(labels), format_func=lambda value: labels[value])
+                selected_recipient: Any = None
+                if recipient_type == "Student":
+                    selected_recipient = st.selectbox(
+                        "Student", list(labels),
+                        format_func=lambda value: labels[value],
+                    )
+                elif recipient_type == "Class":
+                    selected_recipient = st.selectbox(
+                        "Class", class_options, disabled=not class_options,
+                        placeholder="No class is available",
+                    )
+                else:
+                    selected_recipient = st.selectbox(
+                        "XP Team", team_options, disabled=not team_options,
+                        placeholder="No XP Team is available",
+                    )
                 configured_default = rule_lookup[rule_code].get("default_points")
                 if rule_code == "quiz_correction" or pd.isna(configured_default):
                     points_text = st.text_input(
@@ -8459,32 +8496,90 @@ def award_xp_page() -> None:
                 confirmed = st.checkbox("I confirm this XP entry is accurate.")
                 if st.form_submit_button("Record XP", type="primary"):
                     numeric_points = pd.to_numeric(points, errors="coerce")
-                    if not confirmed:
+                    if recipient_type == "Student":
+                        recipient_rows = choices[
+                            choices[matric_col].astype(str).eq(
+                                str(selected_recipient)
+                            )
+                        ]
+                    elif recipient_type == "Class" and class_col:
+                        recipient_rows = choices[
+                            choices[class_col].fillna("").astype(str).eq(
+                                str(selected_recipient)
+                            )
+                        ]
+                    elif recipient_type == "XP Team" and team_col:
+                        recipient_rows = choices[
+                            choices[team_col].fillna("").astype(str).eq(
+                                str(selected_recipient)
+                            )
+                        ]
+                    else:
+                        recipient_rows = pd.DataFrame()
+                    recipient_matrics = (
+                        recipient_rows[matric_col].dropna().astype(str)
+                        .drop_duplicates().tolist()
+                        if matric_col and not recipient_rows.empty else []
+                    )
+                    if not recipient_matrics:
+                        st.error("Select a recipient with at least one student.")
+                    elif not confirmed:
                         st.error("Confirm that this XP entry is accurate.")
                     elif pd.isna(numeric_points) or int(numeric_points) == 0:
                         st.error("Enter a non-zero XP value.")
                     elif not reason.strip():
                         st.error("Add a reason for this XP entry.")
                     elif is_demo():
-                        st.success(f"Demo XP entry recorded: {int(numeric_points):+d} XP.")
+                        st.success(
+                            f"Demo XP entry recorded for {len(recipient_matrics)} "
+                            f"student(s): {int(numeric_points):+d} XP each."
+                        )
                     else:
                         try:
-                            event = db().table("xp_events").insert({
-                                "NO MATRIK": matric,
-                                "rule_code": rule_code,
-                                "points": int(numeric_points),
-                                "source_id": f"manual-{datetime.now().timestamp()}",
-                                "reason": reason.strip(),
-                                "award_mode": "manual",
-                                "awarded_by": st.session_state.user["id"],
-                            }).execute().data[0]
+                            award_reference = f"manual-{datetime.now().timestamp()}"
+                            payload = [
+                                {
+                                    "NO MATRIK": recipient_matric,
+                                    "rule_code": rule_code,
+                                    "points": int(numeric_points),
+                                    "source_id": f"{award_reference}-{position}",
+                                    "reason": reason.strip(),
+                                    "award_mode": "manual",
+                                    "awarded_by": st.session_state.user["id"],
+                                }
+                                for position, recipient_matric in enumerate(
+                                    recipient_matrics, start=1
+                                )
+                            ]
+                            recorded_events = (
+                                db().table("xp_events").insert(payload)
+                                .execute().data or []
+                            )
                             invalidate_table_cache(
                                 "xp_events", "stud_xp", "student_badges"
                             )
-                            actual_points = int(event.get("points", numeric_points))
-                            multiplier = int(event.get("mode_multiplier", 1))
+                            actual_points = sum(
+                                int(event.get("points", numeric_points))
+                                for event in recorded_events
+                            )
+                            multiplier = max(
+                                (
+                                    int(event.get("mode_multiplier", 1))
+                                    for event in recorded_events
+                                ),
+                                default=1,
+                            )
+                            recipient_label = (
+                                labels[recipient_matrics[0]]
+                                if recipient_type == "Student"
+                                else (
+                                    f"{recipient_type} {selected_recipient} "
+                                    f"({len(recipient_matrics)} students)"
+                                )
+                            )
                             st.success(
-                                f"{actual_points:+d} XP recorded for {labels[matric]}."
+                                f"{actual_points:+d} total XP recorded for "
+                                f"{recipient_label}."
                                 + (
                                     " Extra Special 2× multiplier applied."
                                     if multiplier == 2 else ""
