@@ -2182,6 +2182,7 @@ def add_group_rank(
 
 def leaderboard_data(
     month: str | None = None,
+    week: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], str]:
     """Build fair individual and class rankings from the XP ledger."""
     merged, _ = merged_students()
@@ -2255,8 +2256,19 @@ def leaderboard_data(
     monthly_xp = pd.Series(dtype=float)
     if not events.empty and {"NO MATRIK", "points", "created_at"}.issubset(events.columns):
         event_dates = pd.to_datetime(events["created_at"], errors="coerce", utc=True)
-        event_month = event_dates.dt.tz_convert("Asia/Kuala_Lumpur").dt.strftime("%Y-%m")
-        month_events = events[event_month == selected_month].copy()
+        local_event_dates = event_dates.dt.tz_convert("Asia/Kuala_Lumpur")
+        event_month = local_event_dates.dt.strftime("%Y-%m")
+        month_mask = event_month == selected_month
+        month_events = events[month_mask].copy()
+        if week and week != "ALL WEEKS":
+            week_dates = re.findall(r"\d{4}-\d{2}-\d{2}", week)
+            if len(week_dates) == 2:
+                start_date = date.fromisoformat(week_dates[0])
+                end_date = date.fromisoformat(week_dates[1])
+                local_days = local_event_dates.loc[month_events.index].dt.date
+                month_events = month_events[
+                    (local_days >= start_date) & (local_days <= end_date)
+                ]
         month_events["points"] = pd.to_numeric(month_events["points"], errors="coerce").fillna(0)
         monthly_xp = month_events.groupby("NO MATRIK")["points"].sum()
     individuals["Monthly XP"] = (
@@ -2343,6 +2355,31 @@ def leaderboard_data(
     classes = add_group_rank(classes, "Overall XP Average", "Overall Rank")
     classes["Class Badge"] = classes["Overall XP Average"].map(badge_name_for_xp)
     return individuals, classes, available_months, selected_month
+
+
+def xp_week_options(month: str) -> list[str]:
+    """Return Monday-Sunday week filters clipped to the selected month."""
+    try:
+        year, month_number = (int(part) for part in month.split("-", 1))
+        month_start = date(year, month_number, 1)
+    except (TypeError, ValueError):
+        return ["ALL WEEKS"]
+    next_month = (
+        date(year + 1, 1, 1)
+        if month_number == 12 else date(year, month_number + 1, 1)
+    )
+    month_end = next_month - timedelta(days=1)
+    options = ["ALL WEEKS"]
+    cursor = month_start
+    week_number = 1
+    while cursor <= month_end:
+        week_end = min(cursor + timedelta(days=6 - cursor.weekday()), month_end)
+        options.append(
+            f"WEEK {week_number} · {cursor.isoformat()} – {week_end.isoformat()}"
+        )
+        cursor = week_end + timedelta(days=1)
+        week_number += 1
+    return options
 
 
 def progress_page() -> None:
@@ -4465,12 +4502,20 @@ def student_leaderboard_one_page() -> None:
             "Class", ["ALL", *ctx["class_options"]],
             key="student_leaderboard_xp_individual_class",
         )
-        month = st.selectbox(
+        month_col, week_col = st.columns(2)
+        month = month_col.selectbox(
             "XP month", ctx["months"],
             index=ctx["months"].index(ctx["default_month"]),
             key="student_leaderboard_xp_individual_month",
         )
-        rows, _, _, _ = leaderboard_data(month)
+        week_options = xp_week_options(month)
+        if st.session_state.get("student_leaderboard_xp_individual_week") not in week_options:
+            st.session_state.student_leaderboard_xp_individual_week = "ALL WEEKS"
+        week = week_col.selectbox(
+            "XP week", week_options,
+            key="student_leaderboard_xp_individual_week",
+        )
+        rows, _, _, _ = leaderboard_data(month, week)
         if selected_class != "ALL" and not rows.empty:
             rows = rows[rows["Class"].astype(str) == selected_class]
         if rows.empty:
@@ -4577,12 +4622,20 @@ def student_leaderboard_one_page() -> None:
             "Class", ["ALL", *ctx["class_options"]],
             key="student_leaderboard_xp_team_class",
         )
-        month = st.selectbox(
+        month_col, week_col = st.columns(2)
+        month = month_col.selectbox(
             "XP month", ctx["months"],
             index=ctx["months"].index(ctx["default_month"]),
             key="student_leaderboard_xp_team_month",
         )
-        rows, _, _, _ = leaderboard_data(month)
+        week_options = xp_week_options(month)
+        if st.session_state.get("student_leaderboard_xp_team_week") not in week_options:
+            st.session_state.student_leaderboard_xp_team_week = "ALL WEEKS"
+        week = week_col.selectbox(
+            "XP week", week_options,
+            key="student_leaderboard_xp_team_week",
+        )
+        rows, _, _, _ = leaderboard_data(month, week)
         if selected_class != "ALL" and not rows.empty:
             rows = rows[rows["Class"].astype(str) == selected_class]
         teams = rows.groupby("XPTEAM", dropna=False).agg(
@@ -4649,12 +4702,20 @@ def student_leaderboard_two_page() -> None:
                 hide_index=True, width="stretch",
             )
     with xp_tab:
-        month = st.selectbox(
+        month_col, week_col = st.columns(2)
+        month = month_col.selectbox(
             "XP month", ctx["months"],
             index=ctx["months"].index(ctx["default_month"]),
             key="student_leaderboard_xp_class_month",
         )
-        _, classes, _, _ = leaderboard_data(month)
+        week_options = xp_week_options(month)
+        if st.session_state.get("student_leaderboard_xp_class_week") not in week_options:
+            st.session_state.student_leaderboard_xp_class_week = "ALL WEEKS"
+        week = week_col.selectbox(
+            "XP week", week_options,
+            key="student_leaderboard_xp_class_week",
+        )
+        _, classes, _, _ = leaderboard_data(month, week)
         if classes.empty:
             st.info("Class XP leaderboard is not available.")
         else:
@@ -9601,17 +9662,33 @@ def admin_battle_preview_page() -> None:
 def analysis_xp_page() -> None:
     heading("", "Analysis XP")
     _, _, months, default_month = leaderboard_data()
-    selected_month = st.selectbox(
+    month_col, week_col = st.columns(2)
+    selected_month = month_col.selectbox(
         "Reward month",
         months,
         index=months.index(default_month),
     )
-    individuals, classes, _, _ = leaderboard_data(selected_month)
+    week_options = xp_week_options(selected_month)
+    if st.session_state.get("analysis_xp_week") not in week_options:
+        st.session_state.analysis_xp_week = "ALL WEEKS"
+    selected_week = week_col.selectbox(
+        "Reward week",
+        week_options,
+        key="analysis_xp_week",
+    )
+    individuals, classes, _, _ = leaderboard_data(
+        selected_month, selected_week
+    )
+    period_label = (
+        selected_month
+        if selected_week == "ALL WEEKS" else selected_week
+    )
+    period_word = "Monthly" if selected_week == "ALL WEEKS" else "Weekly"
     if individuals.empty:
         st.info("No XP records are available.")
         return
     a, b, c, d = st.columns(4)
-    with a: metric("Monthly XP", f"{int(individuals['Monthly XP'].sum()):,}", selected_month)
+    with a: metric(f"{period_word} XP", f"{int(individuals['Monthly XP'].sum()):,}", period_label)
     with b: metric("Overall XP", f"{int(individuals['Overall XP'].sum()):,}", "Cumulative balance")
     with c: metric("Ranked students", str(len(individuals)), "Eligible individuals")
     with d:
@@ -9637,7 +9714,7 @@ def analysis_xp_page() -> None:
         ]
         st.dataframe(overall, hide_index=True, width="stretch")
     with class_tab:
-        st.subheader(f"Monthly class ranking · {selected_month}")
+        st.subheader(f"{period_word} class ranking · {period_label}")
         monthly_classes = classes.sort_values(["Monthly Rank", "Class"])[
             [
                 "Monthly Rank", "Class", "Students", "Monthly XP Average",
@@ -9666,7 +9743,7 @@ def analysis_xp_page() -> None:
         ).reset_index()
         teams = add_group_rank(teams, "Monthly XP Average", "Monthly Rank")
         teams = add_group_rank(teams, "Overall XP Average", "Overall Rank")
-        st.subheader(f"Monthly XPTEAM ranking · {selected_month}")
+        st.subheader(f"{period_word} XPTEAM ranking · {period_label}")
         st.dataframe(
             teams.sort_values(["Monthly Rank", "XPTEAM"])[[
                 "Monthly Rank", "XPTEAM", "Students", "Monthly XP Average",
