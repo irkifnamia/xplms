@@ -8494,6 +8494,11 @@ def award_xp_page() -> None:
                             st.error(f"XP could not be recorded: {exc}")
 
     with approval_tab:
+        if st.session_state.pop("reset_xp_selection_after_rerun", False):
+            st.session_state.pop("select_all_xp_claims", None)
+            for state_key in list(st.session_state):
+                if str(state_key).startswith("select_claim_"):
+                    st.session_state.pop(state_key, None)
         claims = claims_snapshot.copy()
         claims_live = claims_live_snapshot
         if "status" in claims.columns:
@@ -8502,6 +8507,7 @@ def award_xp_page() -> None:
             claims = filter_award_rows(
                 claims, "claim_type", "award_xp_approve"
             )
+        all_filtered_claims = claims.copy()
         if len(claims) > 15:
             total_request_pages = (len(claims) + 14) // 15
             request_page = st.number_input(
@@ -8597,12 +8603,107 @@ def award_xp_page() -> None:
                         st.error(f"Request approval failed: {exc}")
                     return False
 
+            def initial_claim_points(claim_row: pd.Series) -> int:
+                rule_code = str(claim_row.get("claim_type", "study_group"))
+                configured_points = rule_lookup.get(rule_code, {}).get(
+                    "default_points"
+                )
+                proposed_points = pd.to_numeric(
+                    claim_row.get("requested_points"), errors="coerce"
+                )
+                fallback_points = {
+                    "consultation": 15,
+                    "class_participation": 10,
+                    "commitment": 10,
+                    "study_group": 5,
+                    "extra_practice": 15,
+                }.get(rule_code, 1)
+                if pd.notna(proposed_points):
+                    return int(proposed_points)
+                if pd.notna(configured_points):
+                    return int(configured_points)
+                return fallback_points
+
+            def approve_claim_batch(
+                batch_claims: list[tuple[pd.Series, int]],
+            ) -> tuple[int, int]:
+                approved = 0
+                failed = 0
+                used_bulk_rpc = False
+                if claims_live and batch_claims:
+                    try:
+                        payload = [
+                            {
+                                "claim_id": int(claim_row["id"]),
+                                "points": int(points),
+                                "admin_note": "Batch approved by Admin",
+                            }
+                            for claim_row, points in batch_claims
+                        ]
+                        result = client.rpc("approve_xp_claims_bulk", {
+                            "p_items": payload,
+                            "p_admin_id": st.session_state.user["id"],
+                        }).execute()
+                        result_row = (result.data or [{}])[0]
+                        approved = int(
+                            result_row.get("approved_count", len(batch_claims))
+                        )
+                        failed = int(result_row.get("failed_count", 0))
+                        used_bulk_rpc = True
+                    except Exception:
+                        used_bulk_rpc = False
+                if not claims_live:
+                    return len(batch_claims), 0
+                if not used_bulk_rpc:
+                    for claim_row, points in batch_claims:
+                        if approve_pending_claim(
+                            claim_row, points, "Batch approved by Admin",
+                            refresh_page=False, use_fast_rpc=False,
+                        ):
+                            approved += 1
+                        else:
+                            failed += 1
+                return approved, failed
+
+            def refresh_after_batch_approval(
+                approved: int, failed: int,
+            ) -> None:
+                message = f"{approved} request(s) approved"
+                message += f"; {failed} failed." if failed else "."
+                st.session_state["xp_batch_notice"] = (
+                    "success" if failed == 0 else "warning", message,
+                )
+                st.session_state.pop("award_xp_snapshot", None)
+                st.session_state.pop("xp_review_processed", None)
+                st.session_state["reset_xp_selection_after_rerun"] = True
+                invalidate_table_cache(
+                    "xp_claims", "xp_events", "stud_xp", "student_badges",
+                    "streak_activity_days",
+                )
+                st.rerun()
+
             batch_notice = st.session_state.pop("xp_batch_notice", None)
             if batch_notice:
                 notice_type, notice_text = batch_notice
                 (st.success if notice_type == "success" else st.warning)(
                     notice_text
                 )
+
+            visible_claim_ids = [int(value) for value in claims["id"].tolist()]
+
+            def sync_select_all_claims() -> None:
+                checked = bool(st.session_state.get("select_all_xp_claims"))
+                for claim_id in visible_claim_ids:
+                    st.session_state[f"select_claim_{claim_id}"] = checked
+
+            st.checkbox(
+                "Select all requests on this page",
+                key="select_all_xp_claims",
+                on_change=sync_select_all_claims,
+            )
+            if st.session_state.get("select_all_xp_claims"):
+                for claim_id in visible_claim_ids:
+                    st.session_state[f"select_claim_{claim_id}"] = True
             claim_review_form = st.form(
                 "xp_claim_review_form",
                 clear_on_submit=False,
@@ -8634,28 +8735,10 @@ def award_xp_page() -> None:
                         except Exception:
                             st.warning("The optional proof image could not be displayed.")
                     rule_code = str(claim.get("claim_type", "study_group"))
-                    configured_points = rule_lookup.get(rule_code, {}).get(
-                        "default_points"
-                    )
                     proposed_points = pd.to_numeric(
                         claim.get("requested_points"), errors="coerce"
                     )
-                    fallback_points = {
-                        "consultation": 15,
-                        "class_participation": 10,
-                        "commitment": 10,
-                        "study_group": 5,
-                        "extra_practice": 15,
-                    }.get(rule_code, 1)
-                    initial_points = (
-                        int(proposed_points)
-                        if pd.notna(proposed_points)
-                        else (
-                            int(configured_points)
-                            if pd.notna(configured_points)
-                            else fallback_points
-                        )
-                    )
+                    initial_points = initial_claim_points(claim)
                     if pd.notna(proposed_points):
                         st.caption(
                             f"Student proposed: {int(proposed_points)} XP"
@@ -8715,59 +8798,28 @@ def award_xp_page() -> None:
                 "Select the requests you want, then apply one batch action. "
                 "Selections do not refresh the page."
             )
-            batch_approve, batch_reject = st.columns(2)
+            batch_approve, approve_all, batch_reject = st.columns(3)
             if batch_approve.form_submit_button(
                 "Approve selected",
                 type="primary",
                 width="stretch",
             ) and selected_count > 0:
-                approved = 0
-                failed = 0
-                used_bulk_rpc = False
-                if claims_live and selected_count > 1:
-                    try:
-                        payload = [
-                            {
-                                "claim_id": int(selected_claim["id"]),
-                                "points": int(selected_points),
-                                "admin_note": "Batch approved by Admin",
-                            }
-                            for selected_claim, selected_points in selected_claims
-                        ]
-                        result = client.rpc("approve_xp_claims_bulk", {
-                            "p_items": payload,
-                            "p_admin_id": st.session_state.user["id"],
-                        }).execute()
-                        result_row = (result.data or [{}])[0]
-                        approved = int(result_row.get("approved_count", selected_count))
-                        failed = int(result_row.get("failed_count", 0))
-                        if failed == 0:
-                            st.session_state.setdefault(
-                                "xp_review_processed", set()
-                            ).update(int(row["id"]) for row, _ in selected_claims)
-                        used_bulk_rpc = True
-                    except Exception:
-                        # Migration 034 is optional during rollout; retain the
-                        # proven per-request path until the RPC is available.
-                        used_bulk_rpc = False
-                if not used_bulk_rpc:
-                    for selected_claim, selected_points in selected_claims:
-                        if approve_pending_claim(
-                            selected_claim,
-                            selected_points,
-                            "Batch approved by Admin",
-                            refresh_page=False,
-                            use_fast_rpc=False,
-                        ):
-                            approved += 1
-                        else:
-                            failed += 1
-                message = (
-                    f"{approved} request(s) approved"
-                    + (f"; {failed} failed." if failed else ".")
-                    + " Refresh when you want to reload the list."
-                )
-                (st.success if failed == 0 else st.warning)(message)
+                approved, failed = approve_claim_batch(selected_claims)
+                refresh_after_batch_approval(approved, failed)
+            if approve_all.form_submit_button(
+                "Approve all",
+                type="primary",
+                width="stretch",
+            ):
+                every_claim = [
+                    (claim_row, initial_claim_points(claim_row))
+                    for _, claim_row in all_filtered_claims.iterrows()
+                    if int(claim_row["id"]) not in st.session_state.get(
+                        "xp_review_processed", set()
+                    )
+                ]
+                approved, failed = approve_claim_batch(every_claim)
+                refresh_after_batch_approval(approved, failed)
             if batch_reject.form_submit_button(
                 "Reject selected",
                 width="stretch",
